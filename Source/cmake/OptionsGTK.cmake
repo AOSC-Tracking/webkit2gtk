@@ -7,6 +7,8 @@ SET_PROJECT_VERSION(2 46 5)
 
 set(USER_AGENT_BRANDING "" CACHE STRING "Branding to add to user agent string")
 
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+
 find_package(Cairo 1.16.0 REQUIRED)
 find_package(LibGcrypt 1.7.0 REQUIRED)
 find_package(Libtasn1 REQUIRED)
