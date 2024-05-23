@@ -8,6 +8,8 @@ SET_PROJECT_VERSION(2 48 0)
 set(USER_AGENT_BRANDING "" CACHE STRING "Branding to add to user agent string")
 
 find_package(GLIB 2.70.0 REQUIRED COMPONENTS gio gio-unix gobject gthread gmodule)
+set(THREADS_PREFER_PTHREAD_FLAG ON)
+
 find_package(Cairo 1.16.0 REQUIRED)
 find_package(LibGcrypt 1.7.0 REQUIRED)
 find_package(Libtasn1 REQUIRED)
