@@ -28,14 +28,15 @@
 #include "SQLValue.h"
 #include "SQLiteDatabase.h"
 #include <span>
-#include <wtf/WeakRef.h>
+#include <wtf/CheckedRef.h>
 
 struct sqlite3_stmt;
 
 namespace WebCore {
 
-class SQLiteStatement {
+class SQLiteStatement : public CanMakeThreadSafeCheckedPtr<SQLiteStatement> {
     WTF_MAKE_NONCOPYABLE(SQLiteStatement); WTF_MAKE_FAST_ALLOCATED;
+    WTF_OVERRIDE_DELETE_FOR_CHECKED_PTR(SQLiteStatement);
 public:
     WEBCORE_EXPORT ~SQLiteStatement();
     WEBCORE_EXPORT SQLiteStatement(SQLiteStatement&&);
@@ -93,7 +94,7 @@ private:
     template<typename T, typename... Args> bool bindImpl(int i, T first, Args&&... args);
     template<typename T> bool bindImpl(int, T);
 
-    WeakRef<SQLiteDatabase> m_database;
+    CheckedRef<SQLiteDatabase> m_database;
     sqlite3_stmt* m_statement;
 };
 

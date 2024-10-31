@@ -260,7 +260,7 @@ enum class ResetType {
     Hard
 };
 
-static void webkitWebSrcReset(WebKitWebSrc* src, DataMutexLocker<WebKitWebSrcPrivate::StreamingMembers>& members, ResetType resetType)
+static void webkitWebSrcReset([[maybe_unused]] WebKitWebSrc* src, DataMutexLocker<WebKitWebSrcPrivate::StreamingMembers>& members, ResetType resetType)
 {
     GST_DEBUG_OBJECT(src, "Resetting internal state");
     gst_adapter_clear(members->adapter.get());
@@ -418,7 +418,7 @@ static void restartLoaderIfNeeded(WebKitWebSrc* src, DataMutexLocker<WebKitWebSr
 }
 
 
-static void stopLoaderIfNeeded(WebKitWebSrc* src, DataMutexLocker<WebKitWebSrcPrivate::StreamingMembers>& members)
+static void stopLoaderIfNeeded([[maybe_unused]] WebKitWebSrc* src, DataMutexLocker<WebKitWebSrcPrivate::StreamingMembers>& members)
 {
     ASSERT(isMainThread());
 
@@ -748,11 +748,11 @@ static gboolean webKitWebSrcIsSeekable(GstBaseSrc* baseSrc)
 
 static gboolean webKitWebSrcDoSeek(GstBaseSrc* baseSrc, GstSegment* segment)
 {
-    // This function is mutually exclusive with create(). It's only called when we're transitioning to >=PAUSED and
-    // between flushes. In any case, basesrc holds the STREAM_LOCK, so we know create() is not running.
+    // This function is mutually exclusive with create(). It's only called when we're transitioning to >=PAUSED,
+    // continuing seamless looping, or between flushes. In any case, basesrc holds the STREAM_LOCK, so we know create() is not running.
     // Also, both webKitWebSrcUnLock() and webKitWebSrcUnLockStop() are guaranteed to be called *before* this function.
     // [See gst_base_src_perform_seek()].
-    ASSERT(GST_ELEMENT(baseSrc)->current_state < GST_STATE_PAUSED || GST_PAD_IS_FLUSHING(baseSrc->srcpad));
+    ASSERT(GST_ELEMENT(baseSrc)->current_state < GST_STATE_PAUSED || GST_ELEMENT(baseSrc)->current_state == GST_STATE_PLAYING || GST_PAD_IS_FLUSHING(baseSrc->srcpad));
 
     // Except for the initial seek, this function is only called if isSeekable() returns true.
     ASSERT(GST_ELEMENT(baseSrc)->current_state < GST_STATE_PAUSED || webKitWebSrcIsSeekable(baseSrc));
@@ -946,11 +946,10 @@ static void webKitWebSrcUriHandlerInit(gpointer gIface, gpointer)
     iface->set_uri = webKitWebSrcSetUri;
 }
 
-void webKitWebSrcSetResourceLoader(WebKitWebSrc* src, const RefPtr<WebCore::PlatformMediaResourceLoader>& loader)
+void webKitWebSrcSetResourceLoader(WebKitWebSrc* src, WebCore::PlatformMediaResourceLoader& loader)
 {
-    ASSERT(loader);
     DataMutexLocker members { src->priv->dataMutex };
-    members->loader = loader;
+    members->loader = &loader;
 }
 
 void webKitWebSrcSetReferrer(WebKitWebSrc* src, const String& referrer)
@@ -1164,9 +1163,11 @@ void CachedResourceStreamingClient::dataReceived(PlatformMediaResource&, const S
     // sending time from the receiving time, it is better to ignore it.
     if (!members->downloadStartTime.isNaN()) {
         members->totalDownloadedBytes += data.size();
+#ifndef GST_DISABLE_GST_DEBUG
         double timeSinceStart = (WallTime::now() - members->downloadStartTime).seconds();
         GST_TRACE_OBJECT(src.get(), "R%u: downloaded %" G_GUINT64_FORMAT " bytes in %f seconds =~ %1.0f bytes/second", m_requestNumber, members->totalDownloadedBytes, timeSinceStart
             , timeSinceStart ? members->totalDownloadedBytes / timeSinceStart : 0);
+#endif
     } else {
         members->downloadStartTime = WallTime::now();
     }
@@ -1181,7 +1182,8 @@ void CachedResourceStreamingClient::dataReceived(PlatformMediaResource&, const S
         gst_structure_new("webkit-network-statistics", "read-position", G_TYPE_UINT64, members->readPosition, "size", G_TYPE_UINT64, members->size, nullptr)));
 
     checkUpdateBlocksize(length);
-    GstBuffer* buffer = gstBufferNewWrappedFast(fastMemDup(data.data(), length), length);
+    auto dataSpan = data.span();
+    GstBuffer* buffer = gstBufferNewWrappedFast(fastMemDup(dataSpan.data(), dataSpan.size()), length);
     gst_adapter_push(members->adapter.get(), buffer);
 
     stopLoaderIfNeeded(src.get(), members);

@@ -28,7 +28,6 @@
 #include "config.h"
 #include "Connection.h"
 
-#include "DataReference.h"
 #include "IPCUtilities.h"
 #include "UnixMessage.h"
 #include <WebCore/SharedMemory.h>
@@ -40,6 +39,7 @@
 #include <wtf/Assertions.h>
 #include <wtf/SafeStrerror.h>
 #include <wtf/StdLibExtras.h>
+#include <wtf/TZoneMallocInlines.h>
 #include <wtf/UniStdExtras.h>
 
 #if USE(GLIB)
@@ -68,7 +68,7 @@ static const size_t messageMaxSize = 4096;
 static const size_t attachmentMaxAmount = 254;
 
 class AttachmentInfo {
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED_INLINE(AttachmentInfo);
 public:
     AttachmentInfo()
     {
@@ -206,7 +206,7 @@ bool Connection::processMessage()
 
     uint8_t* messageBody = messageData;
     if (messageInfo.isBodyOutOfLine())
-        messageBody = reinterpret_cast<uint8_t*>(oolMessageBody->data());
+        messageBody = oolMessageBody->mutableSpan().data();
 
     auto decoder = Decoder::create({ messageBody, messageInfo.bodySize() }, WTFMove(attachments));
     ASSERT(decoder);
@@ -365,7 +365,7 @@ void Connection::platformOpen()
 #endif
 
 #if PLATFORM(PLAYSTATION)
-    m_socketMonitor = Thread::create("SocketMonitor", [protectedThis] {
+    m_socketMonitor = Thread::create("SocketMonitor"_s, [protectedThis] {
         {
             int fd;
             while ((fd = protectedThis->m_socketDescriptor) != -1) {
@@ -408,7 +408,7 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
 
     size_t messageSizeWithBodyInline = sizeof(MessageInfo) + (outputMessage.attachments().size() * sizeof(AttachmentInfo)) + outputMessage.bodySize();
     if (messageSizeWithBodyInline > messageMaxSize && outputMessage.bodySize()) {
-        RefPtr<WebCore::SharedMemory> oolMessageBody = WebCore::SharedMemory::allocate(outputMessage.bodySize());
+        RefPtr oolMessageBody = WebCore::SharedMemory::allocate(outputMessage.bodySize());
         if (!oolMessageBody)
             return false;
 
@@ -418,7 +418,7 @@ bool Connection::sendOutgoingMessage(UniqueRef<Encoder>&& encoder)
 
         outputMessage.messageInfo().setBodyOutOfLine();
 
-        memcpy(oolMessageBody->data(), outputMessage.body(), outputMessage.bodySize());
+        memcpySpan(oolMessageBody->mutableSpan(), outputMessage.body());
 
         outputMessage.appendAttachment(handle->releaseHandle());
     }
@@ -486,7 +486,7 @@ bool Connection::sendOutputMessage(UnixMessage& outputMessage)
     }
 
     if (!messageInfo.isBodyOutOfLine() && outputMessage.bodySize()) {
-        iov[iovLength].iov_base = reinterpret_cast<void*>(outputMessage.body());
+        iov[iovLength].iov_base = reinterpret_cast<void*>(outputMessage.body().data());
         iov[iovLength].iov_len = outputMessage.bodySize();
         ++iovLength;
     }
@@ -548,22 +548,43 @@ bool Connection::sendOutputMessage(UnixMessage& outputMessage)
 SocketPair createPlatformConnection(unsigned options)
 {
     int sockets[2];
+
+#if USE(GLIB) && OS(LINUX)
+    auto setPasscredIfNeeded = [options, &sockets] {
+        if (options & SetPasscredOnServer) {
+            int enable = 1;
+            RELEASE_ASSERT(!setsockopt(sockets[1], SOL_SOCKET, SO_PASSCRED, &enable, sizeof(enable)));
+        }
+    };
+#else
+    auto setPasscredIfNeeded = [] { };
+#endif
+
+#if OS(LINUX)
+    if ((options & SetCloexecOnServer) || (options & SetCloexecOnClient)) {
+        RELEASE_ASSERT(socketpair(AF_UNIX, SOCKET_TYPE | SOCK_CLOEXEC, 0, sockets) != -1);
+
+        if (!(options & SetCloexecOnServer))
+            RELEASE_ASSERT(unsetCloseOnExec(sockets[1]));
+        if (!(options & SetCloexecOnClient))
+            RELEASE_ASSERT(unsetCloseOnExec(sockets[0]));
+
+        setPasscredIfNeeded();
+
+        return { sockets[0], sockets[1] };
+    }
+#endif
+
     RELEASE_ASSERT(socketpair(AF_UNIX, SOCKET_TYPE, 0, sockets) != -1);
 
-    if (options & SetCloexecOnServer) {
-        // Don't expose the child socket to the parent process.
-        if (!setCloseOnExec(sockets[1]))
-            RELEASE_ASSERT_NOT_REACHED();
-    }
+    if (options & SetCloexecOnServer)
+        RELEASE_ASSERT(setCloseOnExec(sockets[1]));
+    if (options & SetCloexecOnClient)
+        RELEASE_ASSERT(setCloseOnExec(sockets[0]));
 
-    if (options & SetCloexecOnClient) {
-        // Don't expose the parent socket to potential future children.
-        if (!setCloseOnExec(sockets[0]))
-            RELEASE_ASSERT_NOT_REACHED();
-    }
+    setPasscredIfNeeded();
 
-    SocketPair socketPair = { sockets[0], sockets[1] };
-    return socketPair;
+    return { sockets[0], sockets[1] };
 }
 
 std::optional<Connection::ConnectionIdentifierPair> Connection::createConnectionIdentifierPair()
@@ -571,4 +592,75 @@ std::optional<Connection::ConnectionIdentifierPair> Connection::createConnection
     SocketPair socketPair = createPlatformConnection();
     return ConnectionIdentifierPair { Identifier { UnixFileDescriptor { socketPair.server,  UnixFileDescriptor::Adopt } }, UnixFileDescriptor { socketPair.client, UnixFileDescriptor::Adopt } };
 }
+
+#if USE(GLIB) && OS(LINUX)
+void sendPIDToPeer(int socket)
+{
+    char buffer[1] = { 0 };
+    struct msghdr message = { };
+    struct iovec iov = { buffer, sizeof(buffer) };
+
+    // Write one null byte. Credentials will be attached regardless of what we send.
+    message.msg_iov = &iov;
+    message.msg_iovlen = 1;
+
+    int ret;
+    do {
+        ret = sendmsg(socket, &message, 0);
+    } while (ret == -1 && errno == EINTR);
+
+    if (ret == -1) {
+        // Don't crash if the parent process merely closed its pid socket.
+        // That's equivalent to canceling the process launch.
+        if (errno == EPIPE)
+            exit(1);
+        g_error("sendPIDToPeer: Failed to send pid: %s", g_strerror(errno));
+    }
+}
+
+// The goal here is to receive the pid of the sandboxed child in the parent process's pid namespace.
+// It's impossible for the child to know this, but the kernel will translate it for us.
+//
+// Based on read_pid_from_socket() from bubblewrap's utils.c
+// SPDX-License-Identifier: LGPL-2.0-or-later
+pid_t readPIDFromPeer(int socket)
+{
+    char receiveBuffer[1] = { 0 };
+    struct msghdr message = { };
+    struct iovec iov = { receiveBuffer, sizeof(receiveBuffer) };
+    const ssize_t controlLength = CMSG_SPACE(sizeof(struct ucred));
+    union {
+        char buffer[controlLength];
+        cmsghdr forceAlignment;
+    } controlMessage;
+
+    message.msg_iov = &iov;
+    message.msg_iovlen = 1;
+    message.msg_control = controlMessage.buffer;
+    message.msg_controllen = controlLength;
+
+    int ret;
+    do {
+        ret = recvmsg(socket, &message, 0);
+    } while (ret == -1 && errno == EINTR);
+
+    if (ret == -1)
+        g_error("readPIDFromPeer: Failed to read pid from PID socket: %s", g_strerror(errno));
+
+    if (message.msg_controllen <= 0)
+        g_error("readPIDFromPeer: Unexpected short read from PID socket");
+
+    for (cmsghdr* header = CMSG_FIRSTHDR(&message); header; header = CMSG_NXTHDR(&message, header)) {
+        const unsigned payloadLength = header->cmsg_len - CMSG_LEN(0);
+        if (header->cmsg_level == SOL_SOCKET && header->cmsg_type == SCM_CREDENTIALS && payloadLength == sizeof(struct ucred)) {
+            struct ucred credentials;
+            memcpy(&credentials, CMSG_DATA(header), sizeof(struct ucred));
+            return credentials.pid;
+        }
+    }
+
+    g_error("readPIDFromPeer: No pid returned on PID socket");
+}
+#endif
+
 } // namespace IPC

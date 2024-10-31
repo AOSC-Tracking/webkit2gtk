@@ -45,7 +45,18 @@
 #endif
 
 #if USE(EXTENSIONKIT)
-OBJC_CLASS _SEExtensionProcess;
+#include "ExtensionProcess.h"
+OBJC_CLASS BEWebContentProcess;
+OBJC_CLASS BENetworkingProcess;
+OBJC_CLASS BERenderingProcess;
+#endif
+
+#if USE(GLIB) && OS(LINUX)
+#include <wtf/glib/GSocketMonitor.h>
+#endif
+
+#if ENABLE(BUBBLEWRAP_SANDBOX)
+#include "glib/XDGDBusProxy.h"
 #endif
 
 namespace WebKit {
@@ -57,8 +68,58 @@ enum class SandboxPermission {
 };
 #endif
 
+enum class ProcessLaunchType {
+    Web,
+    Network,
+#if ENABLE(GPU_PROCESS)
+    GPU,
+#endif
+#if ENABLE(BUBBLEWRAP_SANDBOX)
+    DBusProxy,
+#endif
+#if ENABLE(MODEL_PROCESS)
+    Model,
+#endif
+};
+
+struct ProcessLaunchOptions {
+    WebCore::ProcessIdentifier processIdentifier;
+    ProcessLaunchType processType { ProcessLaunchType::Web };
+    HashMap<String, String> extraInitializationData { };
+    bool nonValidInjectedCodeAllowed { false };
+    bool shouldMakeProcessLaunchFailForTesting { false };
+
+#if PLATFORM(GTK) || PLATFORM(WPE)
+    HashMap<CString, SandboxPermission> extraSandboxPaths { };
+#if ENABLE(DEVELOPER_MODE)
+    String processCmdPrefix { };
+#endif
+#endif
+
+#if PLATFORM(PLAYSTATION)
+    String processPath { };
+    int32_t userId { -1 };
+#endif
+};
+
+#if USE(EXTENSIONKIT)
+class LaunchGrant : public ThreadSafeRefCounted<LaunchGrant> {
+public:
+    static Ref<LaunchGrant> create(ExtensionProcess&);
+    ~LaunchGrant();
+
+private:
+    explicit LaunchGrant(ExtensionProcess&);
+
+    ExtensionCapabilityGrant m_grant;
+};
+#endif
+
 class ProcessLauncher : public ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr<ProcessLauncher> {
 public:
+    using ProcessType = ProcessLaunchType;
+    using LaunchOptions = ProcessLaunchOptions;
+
     class Client {
     public:
         virtual ~Client() { }
@@ -68,42 +129,9 @@ public:
         virtual bool isJITEnabled() const { return true; }
         virtual bool shouldEnableSharedArrayBuffer() const { return false; }
         virtual bool shouldEnableLockdownMode() const { return false; }
+        virtual bool shouldDisableJITCage() const { return false; }
 #if PLATFORM(COCOA)
         virtual RefPtr<XPCEventHandler> xpcEventHandler() const { return nullptr; }
-#endif
-    };
-    
-    enum class ProcessType {
-        Web,
-        Network,
-#if ENABLE(GPU_PROCESS)
-        GPU,
-#endif
-#if ENABLE(BUBBLEWRAP_SANDBOX)
-        DBusProxy,
-#endif
-#if ENABLE(MODEL_PROCESS)
-        Model,
-#endif
-    };
-
-    struct LaunchOptions {
-        ProcessType processType;
-        WebCore::ProcessIdentifier processIdentifier;
-        HashMap<String, String> extraInitializationData;
-        bool nonValidInjectedCodeAllowed { false };
-        bool shouldMakeProcessLaunchFailForTesting { false };
-
-#if PLATFORM(GTK) || PLATFORM(WPE)
-        HashMap<CString, SandboxPermission> extraSandboxPaths;
-#if ENABLE(DEVELOPER_MODE)
-        String processCmdPrefix;
-#endif
-#endif
-
-#if PLATFORM(PLAYSTATION)
-        String processPath;
-        int32_t userId { -1 };
 #endif
     };
 
@@ -121,16 +149,19 @@ public:
     void invalidate();
 
 #if USE(EXTENSIONKIT)
-    RetainPtr<_SEExtensionProcess> extensionProcess() const { return m_process; }
+    const std::optional<ExtensionProcess>& extensionProcess() const { return m_process; }
     void setIsRetryingLaunch() { m_isRetryingLaunch = true; }
     bool isRetryingLaunch() const { return m_isRetryingLaunch; }
+    LaunchGrant* launchGrant() const { return m_launchGrant.get(); }
+    void releaseLaunchGrant() { m_launchGrant = nullptr; }
+    static bool hasExtensionsInAppBundle();
 #endif
 
 private:
     ProcessLauncher(Client*, LaunchOptions&&);
 
     void launchProcess();
-    void finishLaunchingProcess(const char* name);
+    void finishLaunchingProcess(ASCIILiteral name);
     void didFinishLaunchingProcess(ProcessID, IPC::Connection::Identifier);
 
     void platformInvalidate();
@@ -147,7 +178,8 @@ private:
 #endif
 
 #if USE(EXTENSIONKIT)
-    RetainPtr<_SEExtensionProcess> m_process;
+    RefPtr<LaunchGrant> m_launchGrant;
+    std::optional<ExtensionProcess> m_process;
     bool m_isRetryingLaunch { false };
 #endif
 
@@ -158,6 +190,15 @@ private:
     const LaunchOptions m_launchOptions;
     bool m_isLaunching { true };
     ProcessID m_processID { 0 };
+
+#if ENABLE(BUBBLEWRAP_SANDBOX)
+    XDGDBusProxy m_dbusProxy;
+#endif
+
+#if USE(GLIB) && OS(LINUX)
+    GSocketMonitor m_socketMonitor;
+    int m_pidServerSocket { -1 };
+#endif
 };
 
 } // namespace WebKit

@@ -43,7 +43,7 @@ public:
         delete static_cast<WebKitVideoSinkProbe*>(userData);
     }
 
-    static GstPadProbeReturn doProbe(GstPad* pad, GstPadProbeInfo* info, gpointer userData)
+    static GstPadProbeReturn doProbe([[maybe_unused]] GstPad* pad, GstPadProbeInfo* info, gpointer userData)
     {
         auto* self = static_cast<WebKitVideoSinkProbe*>(userData);
         auto* player = self->m_player;
@@ -73,8 +73,33 @@ public:
             player->updateVideoOrientation(tagList);
         }
 
-        if (info->type & GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM && GST_QUERY_TYPE(GST_PAD_PROBE_INFO_QUERY(info)) == GST_QUERY_ALLOCATION)
-            gst_query_add_allocation_meta(GST_PAD_PROBE_INFO_QUERY(info), GST_VIDEO_META_API_TYPE, nullptr);
+        if (info->type & GST_PAD_PROBE_TYPE_QUERY_DOWNSTREAM && GST_QUERY_TYPE(GST_PAD_PROBE_INFO_QUERY(info)) == GST_QUERY_ALLOCATION) {
+            auto query = GST_PAD_PROBE_INFO_QUERY(info);
+            gst_query_add_allocation_meta(query, GST_VIDEO_META_API_TYPE, nullptr);
+
+            GstCaps* caps;
+            gboolean needPool;
+            gst_query_parse_allocation(query, &caps, &needPool);
+            if (UNLIKELY(!caps) || !needPool)
+                return GST_PAD_PROBE_OK;
+
+            unsigned size;
+#if GST_CHECK_VERSION(1, 24, 0)
+            if (gst_video_is_dma_drm_caps(caps)) {
+                GstVideoInfoDmaDrm drmInfo;
+                if (!gst_video_info_dma_drm_from_caps(&drmInfo, caps))
+                    return GST_PAD_PROBE_OK;
+                size = GST_VIDEO_INFO_SIZE(&drmInfo.vinfo);
+            } else
+#endif
+            {
+                GstVideoInfo info;
+                if (!gst_video_info_from_caps(&info, caps))
+                    return GST_PAD_PROBE_OK;
+                size = GST_VIDEO_INFO_SIZE(&info);
+            }
+            gst_query_add_allocation_pool(query, nullptr, size, 3, 0);
+        }
 
 #if USE(GSTREAMER_GL)
         // FIXME: Verify the following comment. Investigate what actually should be done here.
@@ -118,15 +143,19 @@ void webKitVideoSinkSetMediaPlayerPrivate(GstElement* appSink, MediaPlayerPrivat
 
     g_signal_connect(appSink, "new-sample", G_CALLBACK(+[](GstElement* sink, MediaPlayerPrivateGStreamer* player) -> GstFlowReturn {
         GRefPtr<GstSample> sample = adoptGRef(gst_app_sink_pull_sample(GST_APP_SINK(sink)));
+#ifndef GST_DISABLE_GST_DEBUG
         GstBuffer* buffer = gst_sample_get_buffer(sample.get());
         GST_TRACE_OBJECT(sink, "new-sample with PTS=%" GST_TIME_FORMAT, GST_TIME_ARGS(GST_BUFFER_PTS(buffer)));
+#endif
         player->triggerRepaint(WTFMove(sample));
         return GST_FLOW_OK;
     }), player);
     g_signal_connect(appSink, "new-preroll", G_CALLBACK(+[](GstElement* sink, MediaPlayerPrivateGStreamer* player) -> GstFlowReturn {
         GRefPtr<GstSample> sample = adoptGRef(gst_app_sink_pull_preroll(GST_APP_SINK(sink)));
+#ifndef GST_DISABLE_GST_DEBUG
         GstBuffer* buffer = gst_sample_get_buffer(sample.get());
         GST_DEBUG_OBJECT(sink, "new-preroll with PTS=%" GST_TIME_FORMAT, GST_TIME_ARGS(GST_BUFFER_PTS(buffer)));
+#endif
         player->triggerRepaint(WTFMove(sample));
         return GST_FLOW_OK;
     }), player);

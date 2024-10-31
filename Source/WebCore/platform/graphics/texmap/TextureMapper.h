@@ -38,7 +38,6 @@
 
 namespace WebCore {
 
-class GraphicsLayer;
 class TextureMapperGLData;
 class TextureMapperShaderProgram;
 class FilterOperations;
@@ -83,6 +82,7 @@ public:
     IntRect clipBounds();
     IntSize maxTextureSize() const { return IntSize(2000, 2000); }
     void setDepthRange(double zNear, double zFar);
+    std::pair<double, double> depthRange() const;
     void setMaskMode(bool m) { m_isMaskMode = m; }
     void setWrapMode(WrapMode m) { m_wrapMode = m; }
     void setPatternTransform(const TransformationMatrix& p) { m_patternTransform = p; }
@@ -101,10 +101,10 @@ private:
 
     enum class Direction { X, Y };
 
-    RefPtr<BitmapTexture> applyFilter(RefPtr<BitmapTexture>&, const RefPtr<const FilterOperation>&, bool defersLastPass);
+    RefPtr<BitmapTexture> applyFilter(RefPtr<BitmapTexture>&, const Ref<const FilterOperation>&, bool defersLastPass);
     RefPtr<BitmapTexture> applyBlurFilter(RefPtr<BitmapTexture>&, const BlurFilterOperation&);
     RefPtr<BitmapTexture> applyDropShadowFilter(RefPtr<BitmapTexture>&, const DropShadowFilterOperation&);
-    RefPtr<BitmapTexture> applySinglePassFilter(RefPtr<BitmapTexture>&, const RefPtr<const FilterOperation>&, bool shouldDefer);
+    RefPtr<BitmapTexture> applySinglePassFilter(RefPtr<BitmapTexture>&, const Ref<const FilterOperation>&, bool shouldDefer);
 
     void drawTextureCopy(const BitmapTexture& sourceTexture, const FloatRect& sourceRect, const FloatRect& targetRect);
     void drawBlurred(const BitmapTexture& sourceTexture, const FloatRect&, float radius, Direction, bool alphaBlur = false);
@@ -119,7 +119,7 @@ private:
     bool beginRoundedRectClip(const TransformationMatrix&, const FloatRoundedRect&);
     void bindDefaultSurface();
     ClipStack& clipStack();
-    TextureMapperGLData& data() { return *m_data; }
+    TextureMapperGLData& data() const { return *m_data; }
 
     void updateProjectionMatrix();
 

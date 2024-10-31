@@ -46,11 +46,15 @@ typedef struct _NSRect NSRect;
 #endif
 #endif
 
+#if USE(SKIA)
+struct SkIRect;
+#endif
+
 #if PLATFORM(WIN)
 typedef struct tagRECT RECT;
 #endif
 
-#if USE(CAIRO)
+#if USE(CAIRO) || PLATFORM(GTK)
 typedef struct _cairo_rectangle_int cairo_rectangle_int_t;
 #endif
 
@@ -66,7 +70,7 @@ class LayoutRect;
 class IntRect {
     WTF_MAKE_FAST_ALLOCATED;
 public:
-    IntRect() { }
+    IntRect() = default;
     IntRect(const IntPoint& location, const IntSize& size)
         : m_location(location), m_size(size) { }
     IntRect(int x, int y, int width, int height)
@@ -144,10 +148,20 @@ public:
         setWidth(std::max(0, width() - delta));
     }
 
+    void shiftMaxXEdgeBy(int delta)
+    {
+        setWidth(std::max(0, width() + delta));
+    }
+
     void shiftYEdgeBy(int delta)
     {
         move(0, delta);
         setHeight(std::max(0, height() - delta));
+    }
+
+    void shiftMaxYEdgeBy(int delta)
+    {
+        setHeight(std::max(0, height() + delta));
     }
 
     IntPoint minXMinYCorner() const { return m_location; } // typically topLeft
@@ -198,7 +212,7 @@ public:
     WEBCORE_EXPORT operator RECT() const;
 #endif
 
-#if USE(CAIRO)
+#if USE(CAIRO) || PLATFORM(GTK)
     IntRect(const cairo_rectangle_int_t&);
     operator cairo_rectangle_int_t() const;
 #endif
@@ -209,6 +223,11 @@ public:
 
 #if PLATFORM(MAC) && !defined(NSGEOMETRY_TYPES_SAME_AS_CGGEOMETRY_TYPES)
     WEBCORE_EXPORT operator NSRect() const;
+#endif
+
+#if USE(SKIA)
+    IntRect(const SkIRect&);
+    operator SkIRect() const;
 #endif
 
 private:

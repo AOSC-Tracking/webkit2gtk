@@ -19,8 +19,8 @@
 
 #pragma once
 
+#include "Damage.h"
 #include "FilterOperations.h"
-#include "FloatRect.h"
 #include "NicosiaAnimation.h"
 #include "TextureMapperSolidColorLayer.h"
 #include <wtf/WeakPtr.h>
@@ -30,17 +30,31 @@
 #endif
 
 namespace WebCore {
+class TextureMapperLayer;
+}
 
-class Region;
+namespace WTF {
+template<typename T> struct IsDeprecatedWeakRefSmartPointerException;
+template<> struct IsDeprecatedWeakRefSmartPointerException<WebCore::TextureMapperLayer> : std::true_type { };
+}
+
+namespace WebCore {
+
 class TextureMapper;
+class TextureMapperFlattenedLayer;
 class TextureMapperPaintOptions;
 class TextureMapperPlatformLayer;
+
+class TextureMapperLayerDamageVisitor {
+public:
+    virtual void recordDamage(const FloatRect&) = 0;
+};
 
 class WEBCORE_EXPORT TextureMapperLayer : public CanMakeWeakPtr<TextureMapperLayer> {
     WTF_MAKE_NONCOPYABLE(TextureMapperLayer);
     WTF_MAKE_FAST_ALLOCATED;
 public:
-    TextureMapperLayer();
+    TextureMapperLayer(Damage::ShouldPropagate = Damage::ShouldPropagate::No);
     virtual ~TextureMapperLayer();
 
 #if USE(COORDINATED_GRAPHICS)
@@ -109,15 +123,31 @@ public:
 
     void addChild(TextureMapperLayer*);
 
+    void acceptDamageVisitor(TextureMapperLayerDamageVisitor&);
+    void dismissDamageVisitor();
+
+    ALWAYS_INLINE void clearDamage();
+    ALWAYS_INLINE void invalidateDamage();
+    ALWAYS_INLINE void addDamage(const Damage&);
+    ALWAYS_INLINE void addDamage(const FloatRect&);
+
 private:
     TextureMapperLayer& rootLayer() const
     {
         if (m_effectTarget)
             return m_effectTarget->rootLayer();
-        if (m_parent)
+        if (m_parent) {
+            if (m_parent->flattensAsLeafOf3DSceneOr3DPerspective())
+                return *m_parent;
             return m_parent->rootLayer();
+        }
         return const_cast<TextureMapperLayer&>(*this);
     }
+
+    void processDescendantLayersFlatteningRequirements();
+    void processFlatteningRequirements();
+    void computeFlattenedRegion(Region&, bool);
+    void destroyFlattenedDescendantLayers();
 
     struct ComputeTransformData;
     void computeTransformsRecursive(ComputeTransformData&);
@@ -142,6 +172,7 @@ private:
     void computeOverlapRegions(ComputeOverlapRegionData&, const TransformationMatrix&, bool includesReplica = true);
 
     void paintRecursive(TextureMapperPaintOptions&);
+    void paintFlattened(TextureMapperPaintOptions&);
     void paintWith3DRenderingContext(TextureMapperPaintOptions&);
     void paintSelfChildrenReplicaFilterAndMask(TextureMapperPaintOptions&);
     void paintUsingOverlapRegions(TextureMapperPaintOptions&);
@@ -152,11 +183,18 @@ private:
     void paintSelf(TextureMapperPaintOptions&);
     void paintSelfAndChildren(TextureMapperPaintOptions&);
     void paintSelfAndChildrenWithReplica(TextureMapperPaintOptions&);
+    void paintBackdrop(TextureMapperPaintOptions&);
     void applyMask(TextureMapperPaintOptions&);
+    void recordDamage(const FloatRect&, const TransformationMatrix&, const TextureMapperPaintOptions&);
 
     bool isVisible() const;
 
     bool shouldBlend() const;
+
+    bool flattensAsLeafOf3DSceneOr3DPerspective() const;
+
+    bool preserves3D() const { return m_state.preserves3D; }
+    bool isFlattened() const { return !!m_flattenedLayer; }
 
     inline FloatRect layerRect() const
     {
@@ -168,6 +206,7 @@ private:
     WeakPtr<TextureMapperLayer> m_effectTarget;
     TextureMapperBackingStore* m_backingStore { nullptr };
     TextureMapperPlatformLayer* m_contentsLayer { nullptr };
+    std::unique_ptr<TextureMapperFlattenedLayer> m_flattenedLayer;
     float m_currentOpacity { 1.0 };
     FilterOperations m_currentFilters;
     float m_centerZ { 0 };
@@ -234,6 +273,11 @@ private:
     bool m_isBackdrop { false };
     bool m_isReplica { false };
 
+    Damage::ShouldPropagate m_propagateDamage;
+    Damage m_damage;
+
+    TextureMapperLayerDamageVisitor* m_visitor { nullptr };
+
     struct {
         TransformationMatrix localTransform;
         TransformationMatrix combined;
@@ -245,5 +289,31 @@ private:
 #endif
     } m_layerTransforms;
 };
+
+ALWAYS_INLINE void TextureMapperLayer::clearDamage()
+{
+    m_damage = Damage();
+}
+
+ALWAYS_INLINE void TextureMapperLayer::invalidateDamage()
+{
+    m_damage.invalidate();
+}
+
+ALWAYS_INLINE void TextureMapperLayer::addDamage(const Damage& damage)
+{
+    if (m_propagateDamage == Damage::ShouldPropagate::No)
+        return;
+
+    m_damage.add(damage);
+}
+
+ALWAYS_INLINE void TextureMapperLayer::addDamage(const FloatRect& rect)
+{
+    if (m_propagateDamage == Damage::ShouldPropagate::No)
+        return;
+
+    m_damage.add(rect);
+}
 
 } // namespace WebCore

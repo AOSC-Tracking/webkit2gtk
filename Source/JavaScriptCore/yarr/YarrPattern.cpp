@@ -228,11 +228,14 @@ public:
                 for (auto* set = canonicalCharacterSetInfo(info->value, m_canonicalMode); (ch = *set); ++set)
                     addChar(ch);
             } else {
-                addChar(ch);
-                addChar(getCanonicalPair(info, ch));
+                char32_t canonicalChar = getCanonicalPair(info, ch);
+                addChar(std::min(ch, canonicalChar));
+                addChar(std::max(ch, canonicalChar));
             }
         }
 
+        std::sort(asciiMatches.begin(), asciiMatches.end());
+        std::sort(unicodeMatches.begin(), unicodeMatches.end());
         performOp();
     }
 
@@ -360,6 +363,9 @@ public:
 
             utf32Strings.append(string);
         }
+
+        std::sort(matches.begin(), matches.end());
+        std::sort(matchesUnicode.begin(), matchesUnicode.end());
 
         performSetOpWithStrings(utf32Strings);
         performSetOpWithMatches(matches, emptyRanges, matchesUnicode, emptyRanges);
@@ -777,6 +783,7 @@ private:
                 if (ch > chunkHi)
                     break;
 
+                ASSERT(ch >= chunkLo);
                 lhsChunkBitSet.set(ch - chunkLo);
             }
 
@@ -788,8 +795,10 @@ private:
                 auto begin = std::max(chunkLo, range.begin);
                 auto end = std::min(range.end, chunkHi);
 
-                for (char32_t ch = begin; ch <= end; ch++)
+                for (char32_t ch = begin; ch <= end; ch++) {
+                    ASSERT(ch >= chunkLo);
                     lhsChunkBitSet.set(ch - chunkLo);
+                }
 
                 if (range.end > chunkHi)
                     break;
@@ -800,6 +809,7 @@ private:
                 if (ch > chunkHi)
                     break;
 
+                ASSERT(ch >= chunkLo);
                 rhsChunkBitSet.set(ch - chunkLo);
             }
 
@@ -811,8 +821,10 @@ private:
                 auto begin = std::max(chunkLo, range.begin);
                 auto end = std::min(range.end, chunkHi);
 
-                for (char32_t ch = begin; ch <= end; ch++)
+                for (char32_t ch = begin; ch <= end; ch++) {
+                    ASSERT(ch >= chunkLo);
                     rhsChunkBitSet.set(ch - chunkLo);
+                }
 
                 if (range.end > chunkHi)
                     break;
@@ -2119,7 +2131,7 @@ void indentForNestingLevel(PrintStream& out, unsigned nestingDepth)
 
 void dumpUChar32(PrintStream& out, char32_t c)
 {
-    if (c >= ' '&& c <= 0xff)
+    if (c >= ' ' && c <= 0xff)
         out.printf("'%c'", static_cast<char>(c));
     else
         out.printf("0x%04x", c);
