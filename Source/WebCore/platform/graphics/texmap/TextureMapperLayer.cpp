@@ -45,6 +45,7 @@ public:
     TextureMapperLayer* replicaLayer { nullptr };
     bool preserves3D { false };
     Vector<IntRect> holePunchRects;
+    bool isPreserves3DFirstTile { false };
 };
 
 struct TextureMapperLayer::ComputeTransformData {
@@ -71,10 +72,13 @@ public:
 
     IntRect layerRect() const { return m_rect; }
 
-    bool needsUpdate() const { return m_textures.isEmpty(); }
+    bool needsUpdate() const { return m_needsUpdate; }
 
     void update(TextureMapperPaintOptions& options, const std::function<void(TextureMapperPaintOptions&)>& paintFunction)
     {
+        if (!m_needsUpdate)
+            return;
+
         auto [prevZNear, prevZFar] =  options.textureMapper.depthRange();
         options.textureMapper.setDepthRange(m_zNear, m_zFar);
 
@@ -89,6 +93,7 @@ public:
                 SetForScope scopedOpacity(options.opacity, 1);
 
                 options.textureMapper.bindSurface(options.surface.get());
+
                 paintFunction(options);
 
                 // If paintFunction applies filters to flattened surface then surface object might have
@@ -101,6 +106,8 @@ public:
 
         options.textureMapper.bindSurface(options.surface.get());
         options.textureMapper.setDepthRange(prevZNear, prevZFar);
+
+        m_needsUpdate = false;
     }
 
     void paintToTextureMapper(TextureMapper& textureMapper, const FloatRect& targetRect, TransformationMatrix& modelViewMatrix, float opacity)
@@ -134,6 +141,7 @@ private:
     double m_zNear;
     double m_zFar;
     Vector<RefPtr<BitmapTexture>> m_textures;
+    bool m_needsUpdate { true };
 };
 
 TextureMapperLayer::TextureMapperLayer(Damage::ShouldPropagate propagateDamage)
@@ -434,33 +442,42 @@ void TextureMapperLayer::paintSelf(TextureMapperPaintOptions& options)
         options.textureMapper.beginClip(transform, m_state.contentsClippingRect);
     }
 
-    bool isHolePunchInPreserve3D = options.preserves3D && contentsLayer->isHolePunchBuffer();
-    if (isHolePunchInPreserve3D) {
-        // If we're in preserve3D mode, then we're painting into an intermediate surface. This means that the
-        // elements are not painted into their final position, as it depends on the offset applied when painting the
-        // intermediate surface. But holepunch buffers need to know the final position in order to position the video
-        // sink and draw the transparent rectangle in the main framebuffer. Options.offset was applied to remove the
-        // offset from the elements that is instead applied to the intermediate surface, so we undo that. That way the
-        // transform shows the final position, and paintToTextureMapper can properly notify the video sink.
-        transform.translate(-options.offset.width(), -options.offset.height());
-    }
-
-    contentsLayer->paintToTextureMapper(options.textureMapper, m_state.contentsRect, transform, options.opacity);
-
-    if (isHolePunchInPreserve3D) {
-        // Once the video sink was notified of the position, store the rect in the list of rects that need to be
-        // painted into the main framebuffer and reapply options.offset.
-        // The holepunch rects stored will be painted transparent into the main framebuffer before blending the
-        // intermediate surface.
-        options.holePunchRects.append(enclosingIntRect(transform.mapRect(m_state.contentsRect)));
-        transform.translate(options.offset.width(), options.offset.height());
-    }
+    if (options.preserves3D && contentsLayer->isHolePunchBuffer())
+        paintPreserves3DHolePunch(contentsLayer, transform, options);
+    else
+        contentsLayer->paintToTextureMapper(options.textureMapper, m_state.contentsRect, transform, options.opacity);
 
     if (shouldClip)
         options.textureMapper.endClip();
 
     if (m_state.showDebugBorders)
         contentsLayer->drawBorder(options.textureMapper, m_state.debugBorderColor, m_state.debugBorderWidth, m_state.contentsRect, transform);
+}
+
+void TextureMapperLayer::paintPreserves3DHolePunch(TextureMapperPlatformLayer* contentsLayer, const TransformationMatrix& transform, TextureMapperPaintOptions& options)
+{
+    // In preserve3D mode we're painting into an intermediate surface. To make holepunch work we need to
+    // paint the transparent rectangle in this layer, but also in the background layer.
+    // The rendering to the intermediate surface is also tiled, which means that this layer can be painted
+    // several times in different tiles. We need to notify the video position and queue the paint of the
+    // background hole only once, while the transparent rectangle to this layer needs to be painted
+    // for each tile.
+
+    if (options.isPreserves3DFirstTile) {
+        // We can't use the passed transform here cause it was created with a modified offset to paint
+        // into the intermediate surface. We need to calculate the real position of the video sink
+        // here by using a transform that doesn't have the intermediate surface offset.
+        TransformationMatrix videoSinkTransform;
+        videoSinkTransform.multiply(options.transform);
+        videoSinkTransform.multiply(m_layerTransforms.combined);
+
+        // Enqueue the holepunch rect to be painted in the background and notify the position to the
+        // video sink.
+        options.holePunchRects.append(enclosingIntRect(videoSinkTransform.mapRect(m_state.contentsRect)));
+        contentsLayer->notifyVideoPosition(m_state.contentsRect, videoSinkTransform);
+    }
+    // Paint the transparent rectangle in the intermediate surface with the original transform.
+    contentsLayer->paintTransparentRectangle(options.textureMapper, m_state.contentsRect, transform);
 }
 
 void TextureMapperLayer::sortByZOrder(Vector<TextureMapperLayer* >& array)
@@ -1066,6 +1083,7 @@ void TextureMapperLayer::paintWith3DRenderingContext(TextureMapperPaintOptions& 
                     SetForScope scopedSurface(options.surface, surface);
                     SetForScope scopedOffset(options.offset, -toIntSize(tileRect.location()));
                     SetForScope scopedOpacity(options.opacity, 1);
+                    SetForScope scopedFirstPass(options.isPreserves3DFirstTile, x == rect.x() && y == rect.y());
 
                     options.textureMapper.bindSurface(options.surface.get());
                     paintSelfAndChildrenWithReplica(options);
