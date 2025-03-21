@@ -28,9 +28,12 @@
 
 #if ENABLE(WEBASSEMBLY)
 
+#include "WasmFormat.h"
 #include "WasmOps.h"
 #include "WasmTypeDefinition.h"
 #include "WebAssemblyGCObjectBase.h"
+
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
 namespace JSC {
 
@@ -39,7 +42,7 @@ class JSWebAssemblyArray final : public WebAssemblyGCObjectBase {
 
 public:
     using Base = WebAssemblyGCObjectBase;
-    static constexpr bool needsDestruction = true;
+    static constexpr DestructionMode needsDestruction = NeedsDestruction;
 
     static void destroy(JSCell*);
 
@@ -53,15 +56,11 @@ public:
 
     static Structure* createStructure(VM&, JSGlobalObject*, JSValue);
 
-    template <typename ElementType>
-    static JSWebAssemblyArray* tryCreate(VM& vm, Structure* structure, Wasm::FieldType elementType, size_t size, FixedVector<ElementType>&& payload, RefPtr<const Wasm::RTT> rtt)
+    static JSWebAssemblyArray* create(VM& vm, Structure* structure, Wasm::FieldType elementType, size_t size, RefPtr<const Wasm::RTT>&& rtt)
     {
-        void* buffer = tryAllocateCell<JSWebAssemblyArray>(vm);
-        if (UNLIKELY(!buffer))
-            return nullptr;
-        JSWebAssemblyArray* array = new (NotNull, buffer) JSWebAssemblyArray(vm, structure, elementType, size, WTFMove(payload), rtt);
-        array->finishCreation(vm);
-        return array;
+        auto* object = new (NotNull, allocateCell<JSWebAssemblyArray>(vm)) JSWebAssemblyArray(vm, structure, elementType, size, WTFMove(rtt));
+        object->finishCreation(vm);
+        return object;
     }
 
     DECLARE_VISIT_CHILDREN;
@@ -94,9 +93,15 @@ public:
         return nullptr;
     };
 
+
+    bool elementsAreRefTypes() const
+    {
+        return Wasm::isRefType(m_elementType.type.unpacked());
+    }
+
     uint64_t* reftypeData()
     {
-        RELEASE_ASSERT(m_elementType.type.unpacked().isRef() || m_elementType.type.unpacked().isRefNull());
+        RELEASE_ASSERT(elementsAreRefTypes());
         return m_payload64.mutableSpan().data();
     }
 
@@ -153,7 +158,7 @@ public:
         case Wasm::TypeKind::Funcref:
         case Wasm::TypeKind::Ref:
         case Wasm::TypeKind::RefNull: {
-            WriteBarrier<Unknown>* pointer = bitwise_cast<WriteBarrier<Unknown>*>(m_payload64.mutableSpan().data());
+            WriteBarrier<Unknown>* pointer = std::bit_cast<WriteBarrier<Unknown>*>(m_payload64.mutableSpan().data());
             pointer += index;
             pointer->set(vm(), this, JSValue::decode(static_cast<EncodedJSValue>(value)));
             break;
@@ -211,11 +216,7 @@ public:
     }
 
 protected:
-    JSWebAssemblyArray(VM&, Structure*, Wasm::FieldType, size_t, FixedVector<uint8_t>&&, RefPtr<const Wasm::RTT>);
-    JSWebAssemblyArray(VM&, Structure*, Wasm::FieldType, size_t, FixedVector<uint16_t>&&, RefPtr<const Wasm::RTT>);
-    JSWebAssemblyArray(VM&, Structure*, Wasm::FieldType, size_t, FixedVector<uint32_t>&&, RefPtr<const Wasm::RTT>);
-    JSWebAssemblyArray(VM&, Structure*, Wasm::FieldType, size_t, FixedVector<uint64_t>&&, RefPtr<const Wasm::RTT>);
-    JSWebAssemblyArray(VM&, Structure*, Wasm::FieldType, size_t, FixedVector<v128_t>&&, RefPtr<const Wasm::RTT>);
+    JSWebAssemblyArray(VM&, Structure*, Wasm::FieldType, size_t, RefPtr<const Wasm::RTT>&&);
     ~JSWebAssemblyArray();
 
     DECLARE_DEFAULT_FINISH_CREATION;
@@ -226,6 +227,7 @@ protected:
     // A union is used here to ensure the underlying storage is aligned correctly.
     // The payload member used entirely depends on m_elementType, so no tag is required.
     union {
+        void* zeroInit { nullptr };
         FixedVector<uint8_t>  m_payload8;
         FixedVector<uint16_t> m_payload16;
         FixedVector<uint32_t> m_payload32;
@@ -235,5 +237,7 @@ protected:
 };
 
 } // namespace JSC
+
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 
 #endif // ENABLE(WEBASSEMBLY)

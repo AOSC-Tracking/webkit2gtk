@@ -30,6 +30,7 @@
 #include "RTCPriorityType.h"
 
 #include <wtf/MainThread.h>
+#include <wtf/TZoneMallocInlines.h>
 
 GST_DEBUG_CATEGORY(webkit_webrtc_data_channel_debug);
 #define GST_CAT_DEFAULT webkit_webrtc_data_channel_debug
@@ -47,6 +48,8 @@ GST_DEBUG_CATEGORY(webkit_webrtc_data_channel_debug);
 #endif
 
 namespace WebCore {
+
+WTF_MAKE_TZONE_ALLOCATED_IMPL(GStreamerDataChannelHandler);
 
 GUniquePtr<GstStructure> GStreamerDataChannelHandler::fromRTCDataChannelInit(const RTCDataChannelInit& options)
 {
@@ -153,7 +156,7 @@ String GStreamerDataChannelHandler::label() const
     return String::fromUTF8(label.get());
 }
 
-void GStreamerDataChannelHandler::setClient(RTCDataChannelHandlerClient& client, ScriptExecutionContextIdentifier contextIdentifier)
+void GStreamerDataChannelHandler::setClient(RTCDataChannelHandlerClient& client, std::optional<ScriptExecutionContextIdentifier> contextIdentifier)
 {
     Locker locker { m_clientLock };
     ASSERT(!m_client);
@@ -354,22 +357,22 @@ void GStreamerDataChannelHandler::onMessageData(GBytes* bytes)
     DC_DEBUG("Incoming data of size: %zu", g_bytes_get_size(bytes));
     Locker locker { m_clientLock };
 
+    auto buffer = SharedBuffer::create(bytes);
     if (!m_client) {
-        m_pendingMessages.append(SharedBuffer::create(bytes));
+        m_pendingMessages.append(WTFMove(buffer));
         return;
     }
 
     if (!*m_client)
         return;
 
-    postTask([this, client = m_client, bytes = GRefPtr<GBytes>(bytes)] {
+    postTask([this, client = m_client, buffer = WTFMove(buffer)] {
         UNUSED_VARIABLE(this); // Conditionally used in DC_MEMDUMP.
         if (!*client)
             return;
-        gsize size = 0;
-        const auto* data = reinterpret_cast<const uint8_t*>(g_bytes_get_data(bytes.get(), &size));
-        DC_MEMDUMP("Incoming raw data", data, size);
-        client.value()->didReceiveRawData(std::span { data, size });
+        auto span = buffer->span();
+        DC_MEMDUMP("Incoming raw data", span.data(), span.size());
+        client.value()->didReceiveRawData(span);
     });
 }
 
@@ -430,7 +433,7 @@ void GStreamerDataChannelHandler::postTask(Function<void()>&& function)
         callOnMainThread(WTFMove(function));
         return;
     }
-    ScriptExecutionContext::postTaskTo(m_contextIdentifier, WTFMove(function));
+    ScriptExecutionContext::postTaskTo(*m_contextIdentifier, WTFMove(function));
 }
 
 #undef GST_CAT_DEFAULT

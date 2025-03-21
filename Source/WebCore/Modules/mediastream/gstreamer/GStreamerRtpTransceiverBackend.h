@@ -25,13 +25,14 @@
 #include "GStreamerRtpSenderBackend.h"
 #include "GUniquePtrGStreamer.h"
 #include "RTCRtpTransceiverBackend.h"
+#include <wtf/TZoneMalloc.h>
 
 namespace WebCore {
 
 class GStreamerRtpReceiverBackend;
 
 class GStreamerRtpTransceiverBackend final : public RTCRtpTransceiverBackend {
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED(GStreamerRtpTransceiverBackend);
 public:
     GStreamerRtpTransceiverBackend(GRefPtr<GstWebRTCRTPTransceiver>&&);
 
@@ -42,7 +43,6 @@ public:
 
     void tearDown();
 
-private:
     RTCRtpTransceiverDirection direction() const final;
     std::optional<RTCRtpTransceiverDirection> currentDirection() const final;
     void setDirection(RTCRtpTransceiverDirection) final;
@@ -51,6 +51,7 @@ private:
     bool stopped() const final;
     ExceptionOr<void> setCodecPreferences(const Vector<RTCRtpCodecCapability>&) final;
 
+private:
     GRefPtr<GstWebRTCRTPTransceiver> m_rtcTransceiver;
     bool m_isStopped { false };
 };

@@ -90,6 +90,8 @@ public:
     ExceptionOr<std::unique_ptr<GStreamerRtpSenderBackend>> addTrack(MediaStreamTrack&, const FixedVector<String>&);
     void removeTrack(GStreamerRtpSenderBackend&);
 
+    void recycleTransceiverForSenderTrack(GStreamerRtpTransceiverBackend*, MediaStreamTrack&, const FixedVector<String>&);
+
     struct Backends {
         std::unique_ptr<GStreamerRtpSenderBackend> senderBackend;
         std::unique_ptr<GStreamerRtpReceiverBackend> receiverBackend;
@@ -120,6 +122,8 @@ public:
     void startRTCLogs();
     void stopRTCLogs();
 
+    void onNegotiationNeeded();
+
 protected:
 #if !RELEASE_LOG_DISABLED
     void onStatsDelivered(const GstStructure*);
@@ -140,7 +144,6 @@ private:
     void setDescription(const RTCSessionDescription*, DescriptionType, Function<void(const GstSDPMessage&)>&& successCallback, Function<void(const GError*)>&& failureCallback);
     void initiate(bool isInitiator, GstStructure*);
 
-    void onNegotiationNeeded();
     void onIceConnectionChange();
     void onIceGatheringChange();
     void onIceCandidate(guint sdpMLineIndex, gchararray candidate);
@@ -148,7 +151,7 @@ private:
     void prepareDataChannel(GstWebRTCDataChannel*, gboolean isLocal);
     void onDataChannel(GstWebRTCDataChannel*);
 
-    WARN_UNUSED_RETURN GstElement* requestAuxiliarySender();
+    WARN_UNUSED_RETURN GstElement* requestAuxiliarySender(GRefPtr<GstWebRTCDTLSTransport>&&);
 
     MediaStream& mediaStreamFromRTCStream(String mediaStreamId);
 
@@ -173,12 +176,14 @@ private:
     void stopLoggingStats();
 
     const Logger& logger() const final { return m_logger.get(); }
-    const void* logIdentifier() const final { return m_logIdentifier; }
+    uint64_t logIdentifier() const final { return m_logIdentifier; }
     ASCIILiteral logClassName() const final { return "GStreamerMediaEndpoint"_s; }
     WTFLogChannel& logChannel() const final;
 
     Seconds statsLogInterval(Seconds) const;
 #endif
+
+    void linkOutgoingSources(GstSDPMessage*);
 
     String trackIdFromSDPMedia(const GstSDPMedia&);
 
@@ -198,12 +203,12 @@ private:
     Timer m_statsLogTimer;
     Seconds m_statsFirstDeliveredTimestamp;
     Ref<const Logger> m_logger;
-    const void* m_logIdentifier;
+    const uint64_t m_logIdentifier;
 #endif
 
     UniqueRef<GStreamerDataChannelHandler> findOrCreateIncomingChannelHandler(GRefPtr<GstWebRTCDataChannel>&&);
 
-    using DataChannelHandlerIdentifier = LegacyNullableObjectIdentifier<GstWebRTCDataChannel>;
+    using DataChannelHandlerIdentifier = ObjectIdentifier<GstWebRTCDataChannel>;
     HashMap<DataChannelHandlerIdentifier, UniqueRef<GStreamerDataChannelHandler>> m_incomingDataChannels;
 
     RefPtr<UniqueSSRCGenerator> m_ssrcGenerator;
@@ -220,6 +225,13 @@ private:
     Vector<RefPtr<RealtimeOutgoingMediaSourceGStreamer>> m_unlinkedOutgoingSources;
 
     bool m_isGatheringRTCLogs { false };
+
+    void maybeInsertNetSimForElement(GstBin*, GstElement*);
+
+    using NetSimOptions = HashMap<String, String>;
+    NetSimOptions netSimOptionsFromEnvironment(ASCIILiteral);
+    NetSimOptions m_srcNetSimOptions;
+    NetSimOptions m_sinkNetSimOptions;
 };
 
 } // namespace WebCore

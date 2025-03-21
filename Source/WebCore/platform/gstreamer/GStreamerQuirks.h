@@ -28,6 +28,7 @@
 #include <wtf/Noncopyable.h>
 #include <wtf/Nonmovable.h>
 #include <wtf/RefCounted.h>
+#include <wtf/TZoneMalloc.h>
 #include <wtf/Vector.h>
 
 namespace WebCore {
@@ -42,7 +43,7 @@ enum class ElementRuntimeCharacteristics : uint8_t {
 };
 
 class GStreamerQuirkBase {
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED(GStreamerQuirkBase);
 
 public:
     GStreamerQuirkBase() = default;
@@ -65,7 +66,7 @@ public:
 };
 
 class GStreamerQuirk : public GStreamerQuirkBase {
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED(GStreamerQuirk);
 public:
     GStreamerQuirk() = default;
     virtual ~GStreamerQuirk() = default;
@@ -86,10 +87,18 @@ public:
     virtual int correctBufferingPercentage(MediaPlayerPrivateGStreamer*, int originalBufferingPercentage, GstBufferingMode) const { return originalBufferingPercentage; }
     virtual void resetBufferingPercentage(MediaPlayerPrivateGStreamer*, int) const { };
     virtual void setupBufferingPercentageCorrection(MediaPlayerPrivateGStreamer*, GstState, GstState, GRefPtr<GstElement>&&) const { }
+
+    // Subclass must return true if it wants to override the default behaviour of sibling platforms.
+    virtual bool processWebAudioSilentBuffer(GstBuffer* buffer) const
+    {
+        GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_GAP);
+        GST_BUFFER_FLAG_SET(buffer, GST_BUFFER_FLAG_DROPPABLE);
+        return false;
+    }
 };
 
 class GStreamerHolePunchQuirk : public GStreamerQuirkBase {
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED(GStreamerHolePunchQuirk);
 public:
     GStreamerHolePunchQuirk() = default;
     virtual ~GStreamerHolePunchQuirk() = default;
@@ -101,7 +110,7 @@ public:
 
 class GStreamerQuirksManager : public RefCounted<GStreamerQuirksManager> {
     friend NeverDestroyed<GStreamerQuirksManager>;
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED(GStreamerQuirksManager);
 
 public:
     static GStreamerQuirksManager& singleton();
@@ -138,6 +147,7 @@ public:
     void resetBufferingPercentage(MediaPlayerPrivateGStreamer*, int bufferingPercentage) const;
     void setupBufferingPercentageCorrection(MediaPlayerPrivateGStreamer*, GstState currentState, GstState newState, GRefPtr<GstElement>&&) const;
 
+    void processWebAudioSilentBuffer(GstBuffer*) const;
 private:
     GStreamerQuirksManager(bool, bool);
 

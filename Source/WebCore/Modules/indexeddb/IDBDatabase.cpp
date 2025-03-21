@@ -68,7 +68,7 @@ IDBDatabase::IDBDatabase(ScriptExecutionContext& context, IDBClient::IDBConnecti
     , m_eventNames(eventNames())
 {
     LOG(IndexedDB, "IDBDatabase::IDBDatabase - Creating database %s with version %" PRIu64 " connection %" PRIu64 " (%p)", m_info.name().utf8().data(), m_info.version(), m_databaseConnectionIdentifier.toUInt64(), this);
-    m_connectionProxy->registerDatabaseConnection(*this);
+    m_connectionProxy->registerDatabaseConnection(*this, context.identifier());
 }
 
 IDBDatabase::~IDBDatabase()
@@ -466,7 +466,7 @@ void IDBDatabase::dispatchEvent(Event& event)
 
     if (auto* versionChangeEvent = dynamicDowncast<IDBVersionChangeEvent>(event)) {
         if (versionChangeEvent->type() == m_eventNames.versionchangeEvent)
-            m_connectionProxy->didFireVersionChangeEvent(m_databaseConnectionIdentifier, versionChangeEvent->requestIdentifier());
+            m_connectionProxy->didFireVersionChangeEvent(m_databaseConnectionIdentifier, *versionChangeEvent->requestIdentifier());
     }
 }
 

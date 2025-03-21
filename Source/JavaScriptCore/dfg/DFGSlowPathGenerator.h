@@ -25,6 +25,10 @@
 
 #pragma once
 
+#include <wtf/Compiler.h>
+
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
+
 #if ENABLE(DFG_JIT)
 
 #include "DFGSilentRegisterSavePlan.h"
@@ -259,6 +263,9 @@ inline std::unique_ptr<SlowPathGenerator> slowPathCall(
     SpillRegistersMode spillMode, ExceptionCheckRequirement requirement,
     ResultType result, Arguments... arguments)
 {
+#if ENABLE(DFG_REGISTER_ALLOCATION_VALIDATION)
+    jit->checkRegisterAllocationAgainstSlowPathCall(from);
+#endif
     return makeUnique<CallResultAndArgumentsSlowPathGenerator<JumpType, FunctionType, ResultType, Arguments...>>(
         from, jit, function, spillMode, requirement, result, arguments...);
 }
@@ -330,3 +337,5 @@ inline std::unique_ptr<SlowPathGenerator> slowPathICCall(
 } } // namespace JSC::DFG
 
 #endif // ENABLD(DFG_JIT)
+
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END

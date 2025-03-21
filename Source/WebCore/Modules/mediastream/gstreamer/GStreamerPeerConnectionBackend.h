@@ -27,6 +27,7 @@
 
 #include <gst/gst.h>
 #include <wtf/HashMap.h>
+#include <wtf/TZoneMalloc.h>
 
 namespace WebCore {
 class GStreamerPeerConnectionBackend;
@@ -59,13 +60,14 @@ struct GStreamerIceCandidate {
 };
 
 class GStreamerPeerConnectionBackend final : public PeerConnectionBackend {
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED(GStreamerPeerConnectionBackend);
 public:
     explicit GStreamerPeerConnectionBackend(RTCPeerConnection&);
     ~GStreamerPeerConnectionBackend();
 
     GStreamerRtpSenderBackend& backendFromRTPSender(RTCRtpSender&);
-    RefPtr<RTCRtpSender> findExistingSender(const Vector<RefPtr<RTCRtpTransceiver>>&, GStreamerRtpSenderBackend&);
+
+    void dispatchSenderBitrateRequest(const GRefPtr<GstWebRTCDTLSTransport>&, uint32_t bitrate);
 
 private:
     void close() final;
@@ -98,7 +100,7 @@ private:
 
     friend class GStreamerMediaEndpoint;
     friend class GStreamerRtpSenderBackend;
-    RTCPeerConnection& connection() { return m_peerConnection; }
+    RTCPeerConnection& connection();
 
     void getStatsSucceeded(const DeferredPromise&, Ref<RTCStatsReport>&&);
 

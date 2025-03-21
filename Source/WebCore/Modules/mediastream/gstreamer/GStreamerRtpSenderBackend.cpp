@@ -32,6 +32,7 @@
 #include "RTCPeerConnection.h"
 #include "RTCRtpSender.h"
 #include "ScriptExecutionContext.h"
+#include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
 
@@ -45,6 +46,8 @@ static void ensureDebugCategoryIsRegistered()
         GST_DEBUG_CATEGORY_INIT(webkit_webrtc_rtp_sender_debug, "webkitwebrtcrtpsender", 0, "WebKit WebRTC RTP sender");
     });
 }
+
+WTF_MAKE_TZONE_ALLOCATED_IMPL(GStreamerRtpSenderBackend);
 
 GStreamerRtpSenderBackend::GStreamerRtpSenderBackend(GStreamerPeerConnectionBackend& backend, GRefPtr<GstWebRTCRTPSender>&& rtcSender)
     : m_peerConnectionBackend(WeakPtr { &backend })
@@ -304,6 +307,15 @@ std::unique_ptr<RTCDtlsTransportBackend> GStreamerRtpSenderBackend::dtlsTranspor
     if (!transport)
         return nullptr;
     return makeUnique<GStreamerDtlsTransportBackend>(WTFMove(transport));
+}
+
+void GStreamerRtpSenderBackend::dispatchBitrateRequest(uint32_t bitrate)
+{
+    switchOn(m_source, [&](Ref<RealtimeOutgoingAudioSourceGStreamer>& source) {
+        source->dispatchBitrateRequest(bitrate);
+    }, [&](Ref<RealtimeOutgoingVideoSourceGStreamer>& source) {
+        source->dispatchBitrateRequest(bitrate);
+    }, [](const std::nullptr_t&) { });
 }
 
 #undef GST_CAT_DEFAULT

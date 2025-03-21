@@ -31,8 +31,9 @@
 
 #include "InspectorPageAgent.h"
 #include "SharedBuffer.h"
-#include <wtf/Deque.h>
+#include <wtf/ListHashSet.h>
 #include <wtf/RobinHoodHashMap.h>
+#include <wtf/TZoneMalloc.h>
 #include <wtf/WallTime.h>
 #include <wtf/text/WTFString.h>
 
@@ -43,10 +44,10 @@ class ResourceResponse;
 class TextResourceDecoder;
 
 class NetworkResourcesData {
-    WTF_MAKE_FAST_ALLOCATED;
+    WTF_MAKE_TZONE_ALLOCATED(NetworkResourcesData);
 public:
     class ResourceData {
-        WTF_MAKE_FAST_ALLOCATED;
+        WTF_MAKE_TZONE_ALLOCATED(ResourceData);
         friend class NetworkResourcesData;
     public:
         ResourceData(const String& requestId, const String& loaderId);
@@ -109,7 +110,7 @@ public:
         bool hasData() const;
         size_t dataLength() const;
         void appendData(const SharedBuffer&);
-        unsigned decodeDataToContent();
+        void decodeDataToContent();
 
         String m_requestId;
         String m_loaderId;
@@ -156,7 +157,7 @@ private:
     void ensureNoDataForRequestId(const String& requestId);
     bool ensureFreeSpace(size_t);
 
-    Deque<String> m_requestIdsDeque;
+    ListHashSet<String> m_requestIdsDeque;
     MemoryCompactRobinHoodHashMap<String, std::unique_ptr<ResourceData>> m_requestIdToResourceDataMap;
     size_t m_contentSize { 0 };
     size_t m_maximumResourcesContentSize;

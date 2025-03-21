@@ -31,6 +31,7 @@
 #include "AbstractModuleRecord.h"
 #include "JSCInlines.h"
 #include "JSModuleNamespaceObject.h"
+#include "JSWebAssemblyArray.h"
 #include "JSWebAssemblyCompileError.h"
 #include "JSWebAssemblyHelpers.h"
 #include "JSWebAssemblyLinkError.h"
@@ -41,10 +42,13 @@
 #include "WasmModuleInformation.h"
 #include "WasmTag.h"
 #include "WasmTypeDefinitionInlines.h"
+#include "WebAssemblyFunctionBase.h"
 #include "WebAssemblyModuleRecord.h"
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/StdLibExtras.h>
 #include <wtf/text/MakeString.h>
+
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
 
 namespace JSC {
 
@@ -73,12 +77,11 @@ JSWebAssemblyInstance::JSWebAssemblyInstance(VM& vm, Structure* structure, JSWeb
     , m_tags(m_module->moduleInformation().exceptionIndexSpaceSize())
 {
     static_assert(static_cast<ptrdiff_t>(JSWebAssemblyInstance::offsetOfCachedMemory() + sizeof(void*)) == JSWebAssemblyInstance::offsetOfCachedBoundsCheckingSize());
-    for (unsigned i = 0; i < m_numImportFunctions; ++i) {
-        auto* info = new (importFunctionInfo(i)) ImportFunctionInfo();
-        info->callLinkInfo.initialize(vm, nullptr, CallLinkInfo::CallType::Call, CodeOrigin { });
-    }
-    m_globals = bitwise_cast<Global::Value*>(bitwise_cast<char*>(this) + offsetOfGlobalPtr(m_numImportFunctions, m_module->moduleInformation().tableCount(), 0));
-    memset(bitwise_cast<char*>(m_globals), 0, m_module->moduleInformation().globalCount() * sizeof(Global::Value));
+    for (unsigned i = 0; i < m_numImportFunctions; ++i)
+        new (importFunctionInfo(i)) WasmOrJSImportableFunctionCallLinkInfo();
+
+    m_globals = std::bit_cast<Global::Value*>(std::bit_cast<char*>(this) + offsetOfGlobalPtr(m_numImportFunctions, m_module->moduleInformation().tableCount(), 0));
+    memset(std::bit_cast<char*>(m_globals), 0, m_module->moduleInformation().globalCount() * sizeof(Global::Value));
     for (unsigned i = 0; i < m_module->moduleInformation().globals.size(); ++i) {
         const GlobalInformation& global = m_module.get().moduleInformation().globals[i];
         if (global.bindingMode == GlobalInformation::BindingMode::Portable) {
@@ -89,7 +92,7 @@ JSWebAssemblyInstance::JSWebAssemblyInstance(VM& vm, Structure* structure, JSWeb
             m_globalsToMark.set(i);
         }
     }
-    memset(bitwise_cast<char*>(this) + offsetOfTablePtr(m_numImportFunctions, 0), 0, m_module->moduleInformation().tableCount() * sizeof(Table*));
+    memset(std::bit_cast<char*>(this) + offsetOfTablePtr(m_numImportFunctions, 0), 0, m_module->moduleInformation().tableCount() * sizeof(Table*));
     for (unsigned elementIndex = 0; elementIndex < m_module->moduleInformation().elementCount(); ++elementIndex) {
         const auto& element = m_module->moduleInformation().elements[elementIndex];
         if (element.isPassive())
@@ -114,7 +117,11 @@ JSWebAssemblyInstance::~JSWebAssemblyInstance()
 {
     clearJSCallICs(*m_vm);
     for (unsigned i = 0; i < m_numImportFunctions; ++i)
-        importFunctionInfo(i)->~ImportFunctionInfo();
+        importFunctionInfo(i)->~WasmOrJSImportableFunctionCallLinkInfo();
+    for (unsigned i = 0; i < m_module->moduleInformation().tableCount(); ++i) {
+        if (Table* table = this->table(i))
+            table->deref();
+    }
 }
 
 void JSWebAssemblyInstance::destroy(JSCell* cell)
@@ -186,14 +193,24 @@ void JSWebAssemblyInstance::finalizeCreation(VM& vm, JSGlobalObject* globalObjec
         module().copyInitialCalleeGroupToAllMemoryModes(memoryMode());
 
     for (unsigned importFunctionNum = 0; importFunctionNum < numImportFunctions(); ++importFunctionNum) {
+        auto functionSpaceIndex = FunctionSpaceIndex(importFunctionNum);
         auto* info = importFunctionInfo(importFunctionNum);
         if (!info->targetInstance) {
-            info->importFunctionStub = module().importFunctionStub(importFunctionNum);
-            importCallees.append(adoptRef(*new WasmToJSCallee(importFunctionNum, { nullptr, nullptr })));
-            info->boxedTargetCalleeLoadLocation = reinterpret_cast<const uintptr_t*>(importCallees.last().ptr());
+            info->importFunctionStub = module().importFunctionStub(functionSpaceIndex);
+            importCallees.append(adoptRef(*new WasmToJSCallee(functionSpaceIndex, { nullptr, nullptr })));
+            ASSERT(!*info->boxedWasmCalleeLoadLocation);
+            info->boxedCallee = CalleeBits::encodeNativeCallee(importCallees.last().ptr());
+            info->boxedWasmCalleeLoadLocation = &info->boxedCallee;
+
+            auto callLinkInfo = makeUnique<DataOnlyCallLinkInfo>();
+            callLinkInfo->initialize(vm, nullptr, CallLinkInfo::CallType::Call, CodeOrigin { });
+            WTF::storeStoreFence(); // CallLinkInfo is visited by concurrent GC already, thus, when we add it, we must ensure that it is fully initialized.
+            info->callLinkInfo = WTFMove(callLinkInfo);
+            vm.writeBarrier(this); // Materialized CallLinkInfo and we need rescan of JSWebAssemblyInstance.
+        } else {
+            info->importFunctionStub = wasmCalleeGroup->wasmToWasmExitStub(functionSpaceIndex);
+            ASSERT(info->boxedWasmCalleeLoadLocation && *info->boxedWasmCalleeLoadLocation);
         }
-        else
-            info->importFunctionStub = wasmCalleeGroup->wasmToWasmExitStub(importFunctionNum);
     }
 
     if (creationMode == CreationMode::FromJS) {
@@ -268,8 +285,7 @@ JSWebAssemblyInstance* JSWebAssemblyInstance::tryCreate(VM& vm, Structure* insta
     bool hasMemoryImport = moduleInformation.memory.isImport();
     if (moduleInformation.memory && !hasMemoryImport) {
         // We create a memory when it's a memory definition.
-        auto* jsMemory = JSWebAssemblyMemory::tryCreate(globalObject, vm, globalObject->webAssemblyMemoryStructure());
-        RETURN_IF_EXCEPTION(throwScope, nullptr);
+        auto* jsMemory = JSWebAssemblyMemory::create(vm, globalObject->webAssemblyMemoryStructure());
 
         RefPtr<Memory> memory = Memory::tryCreate(vm, moduleInformation.memory.initial(), moduleInformation.memory.maximum(), moduleInformation.memory.isShared() ? MemorySharingMode::Shared: MemorySharingMode::Default,
             [&vm, jsMemory](Memory::GrowSuccess, PageCount oldPageCount, PageCount newPageCount) { jsMemory->growSuccessCallback(vm, oldPageCount, newPageCount); }
@@ -285,8 +301,7 @@ JSWebAssemblyInstance* JSWebAssemblyInstance::tryCreate(VM& vm, Structure* insta
     if (!jsInstance->memory()) {
         // Make sure we have a dummy memory, so that wasm -> wasm thunks avoid checking for a nullptr Memory when trying to set pinned registers.
         // When there is a memory import, this will be replaced later in the module record import initialization.
-        auto* jsMemory = JSWebAssemblyMemory::tryCreate(globalObject, vm, globalObject->webAssemblyMemoryStructure());
-        RETURN_IF_EXCEPTION(throwScope, nullptr);
+        auto* jsMemory = JSWebAssemblyMemory::create(vm, globalObject->webAssemblyMemoryStructure());
         jsMemory->adopt(Memory::create(vm));
         jsInstance->setMemory(vm, jsMemory);
         RETURN_IF_EXCEPTION(throwScope, nullptr);
@@ -299,7 +314,8 @@ void JSWebAssemblyInstance::clearJSCallICs(VM& vm)
 {
     for (unsigned index = 0; index < numImportFunctions(); ++index) {
         auto* info = importFunctionInfo(index);
-        info->callLinkInfo.unlinkOrUpgrade(vm, nullptr, nullptr);
+        if (auto* callLinkInfo = info->callLinkInfo.get())
+            callLinkInfo->unlinkOrUpgrade(vm, nullptr, nullptr);
     }
 }
 
@@ -307,7 +323,8 @@ void JSWebAssemblyInstance::finalizeUnconditionally(VM& vm, CollectionScope)
 {
     for (unsigned index = 0; index < numImportFunctions(); ++index) {
         auto* info = importFunctionInfo(index);
-        info->callLinkInfo.visitWeak(vm);
+        if (auto* callLinkInfo = info->callLinkInfo.get())
+            callLinkInfo->visitWeak(vm);
     }
 }
 
@@ -349,7 +366,7 @@ void JSWebAssemblyInstance::setFunctionWrapper(unsigned i, JSValue value)
 Table* JSWebAssemblyInstance::table(unsigned i)
 {
     RELEASE_ASSERT(i < m_module->moduleInformation().tableCount());
-    return *bitwise_cast<Table**>(bitwise_cast<char*>(this) + offsetOfTablePtr(m_numImportFunctions, i));
+    return *std::bit_cast<Table**>(std::bit_cast<char*>(this) + offsetOfTablePtr(m_numImportFunctions, i));
 }
 
 void JSWebAssemblyInstance::tableCopy(uint32_t dstOffset, uint32_t srcOffset, uint32_t length, uint32_t dstTableIndex, uint32_t srcTableIndex)
@@ -446,16 +463,15 @@ void JSWebAssemblyInstance::initElementSegment(uint32_t tableIndex, const Elemen
             // We need a story here. We need to create a WebAssemblyFunction
             // for the import.
             // https://bugs.webkit.org/show_bug.cgi?id=165510
-            uint32_t functionIndex = static_cast<uint32_t>(initialBitsOrIndex);
+            auto functionIndex = Wasm::FunctionSpaceIndex(initialBitsOrIndex);
             TypeIndex typeIndex = m_module->typeIndexFromFunctionIndexSpace(functionIndex);
             if (isImportFunction(functionIndex)) {
                 JSObject* functionImport = importFunction(functionIndex).get();
                 if (isWebAssemblyHostFunction(functionImport)) {
-                    WebAssemblyFunction* wasmFunction = jsDynamicCast<WebAssemblyFunction*>(functionImport);
                     // If we ever import a WebAssemblyWrapperFunction, we set the import as the unwrapped value.
                     // Because a WebAssemblyWrapperFunction can never wrap another WebAssemblyWrapperFunction,
                     // the only type this could be is WebAssemblyFunction.
-                    RELEASE_ASSERT(wasmFunction);
+                    WebAssemblyFunction* wasmFunction = jsSecureCast<WebAssemblyFunction*>(functionImport);
                     jsTable->set(dstIndex, wasmFunction);
                     continue;
                 }
@@ -485,7 +501,7 @@ void JSWebAssemblyInstance::initElementSegment(uint32_t tableIndex, const Elemen
                 globalObject,
                 globalObject->webAssemblyFunctionStructure(),
                 signature.argumentCount(),
-                WTF::makeString(functionIndex),
+                WTF::makeString(functionIndex.rawIndex()),
                 this,
                 jsEntrypointCallee,
                 wasmCallee,
@@ -522,7 +538,7 @@ void JSWebAssemblyInstance::initElementSegment(uint32_t tableIndex, const Elemen
     }
 }
 
-bool JSWebAssemblyInstance::copyDataSegment(uint32_t segmentIndex, uint32_t offset, uint32_t lengthInBytes, uint8_t* values)
+bool JSWebAssemblyInstance::copyDataSegment(JSWebAssemblyArray* array, uint32_t segmentIndex, uint32_t offset, uint32_t lengthInBytes, uint8_t* values)
 {
     // Fail if the data segment index is out of bounds
     RELEASE_ASSERT(segmentIndex < module().moduleInformation().dataSegmentsCount());
@@ -542,17 +558,27 @@ bool JSWebAssemblyInstance::copyDataSegment(uint32_t segmentIndex, uint32_t offs
     const uint8_t* segmentData = &segment->byte(offset);
 
     // Copy the data from the segment into the out param vector
-    memcpy(values, segmentData, lengthInBytes);
+    if (array->elementsAreRefTypes()) {
+        gcSafeMemcpy(std::bit_cast<uint64_t*>(values), std::bit_cast<const uint64_t*>(segmentData), lengthInBytes);
+        m_vm->writeBarrier(array);
+    } else
+        memcpy(values, segmentData, lengthInBytes);
 
     return true;
 }
 
-void JSWebAssemblyInstance::copyElementSegment(const Element& segment, uint32_t srcOffset, uint32_t length, uint64_t* values)
+void JSWebAssemblyInstance::copyElementSegment(JSWebAssemblyArray* array, const Element& segment, uint32_t srcOffset, uint32_t length, uint64_t* values)
 {
     // Caller should have already checked that the (offset + length) calculation doesn't overflow int32,
     // and that the (offset + length) doesn't overflow the element segment
     ASSERT(!sumOverflows<uint32_t>(srcOffset, length));
     ASSERT((srcOffset + length) <= segment.length());
+
+    auto set = [&](size_t index, uint64_t value) {
+        values[index] = value;
+        if (array->elementsAreRefTypes())
+            m_vm->writeBarrier(array);
+    };
 
     for (uint32_t i = 0; i < length; i++) {
         uint32_t srcIndex = srcOffset + i;
@@ -561,7 +587,7 @@ void JSWebAssemblyInstance::copyElementSegment(const Element& segment, uint32_t 
 
         // Represent the null function as the null JS value
         if (initType == Element::InitializationType::FromRefNull) {
-            values[i] = static_cast<uint64_t>(JSValue::encode(jsNull()));
+            set(i, static_cast<uint64_t>(JSValue::encode(jsNull())));
             continue;
         }
 
@@ -573,12 +599,12 @@ void JSWebAssemblyInstance::copyElementSegment(const Element& segment, uint32_t 
             // and create them here dynamically instead.
             JSValue value = getFunctionWrapper(functionIndex);
             ASSERT(value.isCallable());
-            values[i] = static_cast<uint64_t>(JSValue::encode(value));
+            set(i, static_cast<uint64_t>(JSValue::encode(value)));
             continue;
         }
 
         if (initType == Element::InitializationType::FromGlobal) {
-            values[i] = loadI64Global(initialBitsOrIndex);
+            set(i, loadI64Global(initialBitsOrIndex));
             continue;
         }
 
@@ -588,7 +614,7 @@ void JSWebAssemblyInstance::copyElementSegment(const Element& segment, uint32_t 
         // FIXME: https://bugs.webkit.org/show_bug.cgi?id=264454
         // Currently this should never fail, as the parse phase already validated it.
         RELEASE_ASSERT(success);
-        values[i] = result;
+        set(i, result);
     }
 }
 
@@ -618,7 +644,7 @@ void JSWebAssemblyInstance::setTable(unsigned i, Ref<Table>&& table)
 {
     RELEASE_ASSERT(i < m_module->moduleInformation().tableCount());
     ASSERT(!this->table(i));
-    *bitwise_cast<Table**>(bitwise_cast<char*>(this) + offsetOfTablePtr(m_numImportFunctions, i)) = &table.leakRef();
+    *std::bit_cast<Table**>(std::bit_cast<char*>(this) + offsetOfTablePtr(m_numImportFunctions, i)) = &table.leakRef();
 }
 
 void JSWebAssemblyInstance::linkGlobal(unsigned i, Ref<Global>&& global)
@@ -633,5 +659,7 @@ void JSWebAssemblyInstance::setTag(unsigned index, Ref<const Tag>&& tag)
 }
 
 } // namespace JSC
+
+WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 
 #endif // ENABLE(WEBASSEMBLY)
