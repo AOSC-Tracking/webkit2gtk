@@ -922,16 +922,16 @@ namespace SK_OPTS_NS {
                                                              sk_bit_cast<__m256i>(c)));
     }
 
-    SI F   min(F a, F b)        { return __lasx_xvfmin_s(a,b); }
-    SI F   max(F a, F b)        { return __lasx_xvfmax_s(a,b); }
-    SI I32 min(I32 a, I32 b)    { return __lasx_xvmin_w(a,b);  }
-    SI U32 min(U32 a, U32 b)    { return __lasx_xvmin_wu(a,b); }
-    SI I32 max(I32 a, I32 b)    { return __lasx_xvmax_w(a,b);  }
-    SI U32 max(U32 a, U32 b)    { return __lasx_xvmax_wu(a,b); }
+    SI F   min(F a, F b)        { return (F)__lasx_xvfmin_s((__m256)a, (__m256)b);     }
+    SI F   max(F a, F b)        { return (F)__lasx_xvfmax_s((__m256)a, (__m256)b);     }
+    SI I32 min(I32 a, I32 b)    { return (I32)__lasx_xvmin_w((__m256i)a, (__m256i)b);  }
+    SI U32 min(U32 a, U32 b)    { return (U32)__lasx_xvmin_wu((__m256i)a, (__m256i)b); }
+    SI I32 max(I32 a, I32 b)    { return (I32)__lasx_xvmax_w((__m256i)a, (__m256i)b);  }
+    SI U32 max(U32 a, U32 b)    { return (U32)__lasx_xvmax_wu((__m256i)a, (__m256i)b); }
 
     SI F   mad(F f, F m, F a)   { return __lasx_xvfmadd_s(f, m, a);      }
     SI F   nmad(F f, F m, F a)  { return __lasx_xvfmadd_s(-f, m, a);    }
-    SI F   abs_  (F v)          { return (F)__lasx_xvand_v((I32)v, (I32)(0-v));     }
+    SI F   abs_(F v)            { return (F)__lasx_xvand_v((__m256i)v, (__m256i)(I32)(0-v)); }
     SI I32 abs_(I32 v)          { return max(v, -v);                     }
     SI F   rcp_approx(F v)      { return __lasx_xvfrecip_s(v);           }
     SI F   rcp_precise (F v)    { F e = rcp_approx(v); return e * nmad(v, e, F() + 2.0f); }
@@ -939,18 +939,16 @@ namespace SK_OPTS_NS {
     SI F    sqrt_(F v)          { return __lasx_xvfsqrt_s(v);            }
 
     SI U32 iround(F v) {
-        F t = F() + 0.5f;
-        return __lasx_xvftintrz_w_s(v + t);
+        return (U32)__lasx_xvftintrz_w_s(v + 0.5f);
     }
 
     SI U32 round(F v) {
-        F t = F() + 0.5f;
-        return __lasx_xvftintrz_w_s(v + t);
+        return (U32)__lasx_xvftintrz_w_s(v + 0.5f);
     }
 
     SI U16 pack(U32 v) {
-        return __lsx_vpickev_h(__lsx_vsat_wu(emulate_lasx_d_xr2vr_h(v), 15),
-                               __lsx_vsat_wu(emulate_lasx_d_xr2vr_l(v), 15));
+        return (U16)__lsx_vpickev_h(__lsx_vsat_wu(emulate_lasx_d_xr2vr_h((__m256i)v), 15),
+                                    __lsx_vsat_wu(emulate_lasx_d_xr2vr_l((__m256i)v), 15));
     }
 
     SI U8 pack(U16 v) {
@@ -960,12 +958,12 @@ namespace SK_OPTS_NS {
     }
 
     SI bool any(I32 c){
-        v8i32 retv = (v8i32)__lasx_xvmskltz_w(__lasx_xvslt_wu(__lasx_xvldi(0), c));
+        v8i32 retv = (v8i32)__lasx_xvmskltz_w(__lasx_xvslt_wu(__lasx_xvldi(0), (__m256i)c));
         return (retv[0] | retv[4]) != 0b0000;
     }
 
     SI bool all(I32 c){
-        v8i32 retv = (v8i32)__lasx_xvmskltz_w(__lasx_xvslt_wu(__lasx_xvldi(0), c));
+        v8i32 retv = (v8i32)__lasx_xvmskltz_w(__lasx_xvslt_wu(__lasx_xvldi(0), (__m256i)c));
         return (retv[0] & retv[4]) == 0b1111;
     }
 
@@ -998,16 +996,16 @@ namespace SK_OPTS_NS {
     }
 
     SI void load2(const uint16_t* ptr, U16* r, U16* g) {
-        U16 _0123 = __lsx_vld(ptr, 0),
-            _4567 = __lsx_vld(ptr, 16);
-        *r = __lsx_vpickev_h(__lsx_vsat_w(__lsx_vsrai_w(__lsx_vslli_w(_4567, 16), 16), 15),
-                             __lsx_vsat_w(__lsx_vsrai_w(__lsx_vslli_w(_0123, 16), 16), 15));
-        *g = __lsx_vpickev_h(__lsx_vsat_w(__lsx_vsrai_w(_4567, 16), 15),
-                             __lsx_vsat_w(__lsx_vsrai_w(_0123, 16), 15));
+        U16 _0123 = (U16)__lsx_vld(ptr, 0),
+            _4567 = (U16)__lsx_vld(ptr, 16);
+        *r = (U16)__lsx_vpickev_h(__lsx_vsat_w(__lsx_vsrai_w(__lsx_vslli_w(_4567, 16), 16), 15),
+                                  __lsx_vsat_w(__lsx_vsrai_w(__lsx_vslli_w(_0123, 16), 16), 15));
+        *g = (U16)__lsx_vpickev_h(__lsx_vsat_w(__lsx_vsrai_w(_4567, 16), 15),
+                                  __lsx_vsat_w(__lsx_vsrai_w(_0123, 16), 15));
     }
     SI void store2(uint16_t* ptr, U16 r, U16 g) {
-        auto _0123 = __lsx_vilvl_h(g, r),
-             _4567 = __lsx_vilvh_h(g, r);
+        auto _0123 = __lsx_vilvl_h((__m128i)g, (__m128i)r),
+             _4567 = __lsx_vilvh_h((__m128i)g, (__m128i)r);
         __lsx_vst(_0123, ptr, 0);
         __lsx_vst(_4567, ptr, 16);
     }
@@ -1028,17 +1026,17 @@ namespace SK_OPTS_NS {
              rg4567 = __lsx_vilvl_h(_57, _46),
              ba4567 = __lsx_vilvh_h(_57, _46);
 
-        *r = __lsx_vilvl_d(rg4567, rg0123);
-        *g = __lsx_vilvh_d(rg4567, rg0123);
-        *b = __lsx_vilvl_d(ba4567, ba0123);
-        *a = __lsx_vilvh_d(ba4567, ba0123);
+        *r = (U16)__lsx_vilvl_d(rg4567, rg0123);
+        *g = (U16)__lsx_vilvh_d(rg4567, rg0123);
+        *b = (U16)__lsx_vilvl_d(ba4567, ba0123);
+        *a = (U16)__lsx_vilvh_d(ba4567, ba0123);
     }
 
     SI void store4(uint16_t* ptr, U16 r, U16 g, U16 b, U16 a) {
-        auto rg0123 = __lsx_vilvl_h(g, r),      // r0 g0 r1 g1 r2 g2 r3 g3
-             rg4567 = __lsx_vilvh_h(g, r),      // r4 g4 r5 g5 r6 g6 r7 g7
-             ba0123 = __lsx_vilvl_h(a, b),
-             ba4567 = __lsx_vilvh_h(a, b);
+        auto rg0123 = __lsx_vilvl_h((__m128i)g, (__m128i)r),    // r0 g0 r1 g1 r2 g2 r3 g3
+             rg4567 = __lsx_vilvh_h((__m128i)g, (__m128i)r),    // r4 g4 r5 g5 r6 g6 r7 g7
+             ba0123 = __lsx_vilvl_h((__m128i)a, (__m128i)b),
+             ba4567 = __lsx_vilvh_h((__m128i)a, (__m128i)b);
 
         auto _01 =__lsx_vilvl_w(ba0123, rg0123),
              _23 =__lsx_vilvh_w(ba0123, rg0123),
@@ -1121,29 +1119,29 @@ namespace SK_OPTS_NS {
                                                            sk_bit_cast<__m128i>(c)));
     }
 
-    SI F   min(F a, F b)        { return __lsx_vfmin_s(a,b);     }
-    SI F   max(F a, F b)        { return __lsx_vfmax_s(a,b);     }
-    SI I32 min(I32 a, I32 b)    { return __lsx_vmin_w(a,b);      }
-    SI U32 min(U32 a, U32 b)    { return __lsx_vmin_wu(a,b);     }
-    SI I32 max(I32 a, I32 b)    { return __lsx_vmax_w(a,b);      }
-    SI U32 max(U32 a, U32 b)    { return __lsx_vmax_wu(a,b);     }
+    SI F   min(F a, F b)        { return (F)__lsx_vfmin_s((__m128)a, (__m128)b);     }
+    SI F   max(F a, F b)        { return (F)__lsx_vfmax_s((__m128)a, (__m128)b);     }
+    SI I32 min(I32 a, I32 b)    { return (I32)__lsx_vmin_w((__m128i)a, (__m128i)b);  }
+    SI U32 min(U32 a, U32 b)    { return (U32)__lsx_vmin_wu((__m128i)a, (__m128i)b); }
+    SI I32 max(I32 a, I32 b)    { return (I32)__lsx_vmax_w((__m128i)a, (__m128i)b);  }
+    SI U32 max(U32 a, U32 b)    { return (U32)__lsx_vmax_wu((__m128i)a, (__m128i)b); }
 
-    SI F   mad(F f, F m, F a)   { return __lsx_vfmadd_s(f, m, a);        }
-    SI F   nmad(F f, F m, F a)  { return __lsx_vfmadd_s(-f, m, a);      }
-    SI F   abs_(F v)            { return (F)__lsx_vand_v((I32)v, (I32)(0-v));       }
+    SI F   mad(F f, F m, F a)   { return (F)__lsx_vfmadd_s((__m128)f, (__m128)m, (__m128)a);    }
+    SI F   nmad(F f, F m, F a)  { return (F)__lsx_vfmadd_s((__m128)(-f), (__m128)m, (__m128)a); }
+    SI F   abs_(F v)            { return (F)__lsx_vand_v((__m128i)(I32)v, (__m128i)(I32)(0-v)); }
     SI I32 abs_(I32 v)          { return max(v, -v);                     }
-    SI F   rcp_approx (F v)     { return __lsx_vfrecip_s(v);             }
+    SI F   rcp_approx (F v)     { return (F)__lsx_vfrecip_s((__m128)v);  }
     SI F   rcp_precise (F v)    { F e = rcp_approx(v); return e * nmad(v, e, F() + 2.0f); }
-    SI F   rsqrt_approx (F v)   { return __lsx_vfrsqrt_s(v);             }
-    SI F    sqrt_(F v)          { return __lsx_vfsqrt_s (v);             }
+    SI F   rsqrt_approx (F v)   { return (F)__lsx_vfrsqrt_s((__m128)v);  }
+    SI F    sqrt_(F v)          { return (F)__lsx_vfsqrt_s ((__m128)v);  }
 
     SI U32 iround(F v) {
-        F t = F() + 0.5f;
-        return __lsx_vftintrz_w_s(v + t); }
+        return (U32)__lsx_vftintrz_w_s(v + 0.5f);
+    }
 
     SI U32 round(F v) {
-        F t = F() + 0.5f;
-        return __lsx_vftintrz_w_s(v + t); }
+        return (U32)__lsx_vftintrz_w_s(v + 0.5f);
+    }
 
     SI U16 pack(U32 v) {
         __m128i tmp = __lsx_vsat_wu(v, 15);
@@ -1159,12 +1157,12 @@ namespace SK_OPTS_NS {
     }
 
     SI bool any(I32 c){
-        v4i32 retv = (v4i32)__lsx_vmskltz_w(__lsx_vslt_wu(__lsx_vldi(0), c));
+        v4i32 retv = (v4i32)__lsx_vmskltz_w(__lsx_vslt_wu(__lsx_vldi(0), (__m128i)c));
         return retv[0] != 0b0000;
     }
 
     SI bool all(I32 c){
-        v4i32 retv = (v4i32)__lsx_vmskltz_w(__lsx_vslt_wu(__lsx_vldi(0), c));
+        v4i32 retv = (v4i32)__lsx_vmskltz_w(__lsx_vslt_wu(__lsx_vldi(0), (__m128i)c));
         return retv[0] == 0b1111;
     }
 
@@ -1211,7 +1209,7 @@ namespace SK_OPTS_NS {
     }
 
     SI void store2(uint16_t* ptr, U16 r, U16 g) {
-        U32 rg = __lsx_vilvl_h(widen_cast<__m128i>(g), widen_cast<__m128i>(r));
+        U32 rg = (U32)__lsx_vilvl_h(widen_cast<__m128i>(g), widen_cast<__m128i>(r));
         __lsx_vst(rg, ptr, 0);
     }
 
@@ -3391,35 +3389,35 @@ SI void gradient_lookup(const SkRasterPipeline_GradientCtx* c, U32 idx, F t,
     } else
 #elif defined(SKRP_CPU_LASX)
     if (c->stopCount <= 8) {
-        fr = (__m256)__lasx_xvperm_w(__lasx_xvld(c->fs[0], 0), idx);
-        br = (__m256)__lasx_xvperm_w(__lasx_xvld(c->bs[0], 0), idx);
-        fg = (__m256)__lasx_xvperm_w(__lasx_xvld(c->fs[1], 0), idx);
-        bg = (__m256)__lasx_xvperm_w(__lasx_xvld(c->bs[1], 0), idx);
-        fb = (__m256)__lasx_xvperm_w(__lasx_xvld(c->fs[2], 0), idx);
-        bb = (__m256)__lasx_xvperm_w(__lasx_xvld(c->bs[2], 0), idx);
-        fa = (__m256)__lasx_xvperm_w(__lasx_xvld(c->fs[3], 0), idx);
-        ba = (__m256)__lasx_xvperm_w(__lasx_xvld(c->bs[3], 0), idx);
+        fr = (F)__lasx_xvperm_w(__lasx_xvld(c->fs[0], 0), (__m256i)idx);
+        br = (F)__lasx_xvperm_w(__lasx_xvld(c->bs[0], 0), (__m256i)idx);
+        fg = (F)__lasx_xvperm_w(__lasx_xvld(c->fs[1], 0), (__m256i)idx);
+        bg = (F)__lasx_xvperm_w(__lasx_xvld(c->bs[1], 0), (__m256i)idx);
+        fb = (F)__lasx_xvperm_w(__lasx_xvld(c->fs[2], 0), (__m256i)idx);
+        bb = (F)__lasx_xvperm_w(__lasx_xvld(c->bs[2], 0), (__m256i)idx);
+        fa = (F)__lasx_xvperm_w(__lasx_xvld(c->fs[3], 0), (__m256i)idx);
+        ba = (F)__lasx_xvperm_w(__lasx_xvld(c->bs[3], 0), (__m256i)idx);
     } else
 #elif defined(SKRP_CPU_LSX)
     if (c->stopCount <= 4) {
         __m128i zero = __lsx_vldi(0);
-        fr = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->fs[0], 0));
-        br = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->bs[0], 0));
-        fg = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->fs[1], 0));
-        bg = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->bs[1], 0));
-        fb = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->fs[2], 0));
-        bb = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->bs[2], 0));
-        fa = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->fs[3], 0));
-        ba = (__m128)__lsx_vshuf_w(idx, zero, __lsx_vld(c->bs[3], 0));
+        fr = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->fs[0], 0));
+        br = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->bs[0], 0));
+        fg = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->fs[1], 0));
+        bg = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->bs[1], 0));
+        fb = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->fs[2], 0));
+        bb = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->bs[2], 0));
+        fa = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->fs[3], 0));
+        ba = (F)__lsx_vshuf_w((__m128i)idx, zero, __lsx_vld(c->bs[3], 0));
     } else
 #endif
     {
 #if defined(SKRP_CPU_LSX)
         // This can reduce some vpickve2gr instructions.
-        int i0 = __lsx_vpickve2gr_w(idx, 0);
-        int i1 = __lsx_vpickve2gr_w(idx, 1);
-        int i2 = __lsx_vpickve2gr_w(idx, 2);
-        int i3 = __lsx_vpickve2gr_w(idx, 3);
+        int i0 = __lsx_vpickve2gr_w((__m128i)idx, 0);
+        int i1 = __lsx_vpickve2gr_w((__m128i)idx, 1);
+        int i2 = __lsx_vpickve2gr_w((__m128i)idx, 2);
+        int i3 = __lsx_vpickve2gr_w((__m128i)idx, 3);
         fr = gather((int *)c->fs[0], i0, i1, i2, i3);
         br = gather((int *)c->bs[0], i0, i1, i2, i3);
         fg = gather((int *)c->fs[1], i0, i1, i2, i3);
@@ -5931,7 +5929,7 @@ SI void from_8888(U32 rgba, U16* r, U16* g, U16* b, U16* a) {
         split(v, &_02,&_13);
         __m256i tmp0 = __lasx_xvsat_wu(_02, 15);
         __m256i tmp1 = __lasx_xvsat_wu(_13, 15);
-        return __lasx_xvpickev_h(tmp1, tmp0);
+        return (U16)__lasx_xvpickev_h(tmp1, tmp0);
     };
 #elif defined(SKRP_CPU_LSX)
     __m128i _01, _23, rg, ba;
@@ -5941,10 +5939,10 @@ SI void from_8888(U32 rgba, U16* r, U16* g, U16* b, U16* a) {
 
     __m128i mask_00ff = __lsx_vreplgr2vr_h(0xff);
 
-    *r = __lsx_vand_v(rg, mask_00ff);
-    *g = __lsx_vsrli_h(rg, 8);
-    *b = __lsx_vand_v(ba, mask_00ff);
-    *a = __lsx_vsrli_h(ba, 8);
+    *r = (U16)__lsx_vand_v(rg, mask_00ff);
+    *g = (U16)__lsx_vsrli_h(rg, 8);
+    *b = (U16)__lsx_vand_v(ba, mask_00ff);
+    *a = (U16)__lsx_vsrli_h(ba, 8);
 #else
     auto cast_U16 = [](U32 v) -> U16 {
         return cast<U16>(v);
@@ -5972,26 +5970,26 @@ SI void load_8888_(const uint32_t* ptr, U16* r, U16* g, U16* b, U16* a) {
 SI void store_8888_(uint32_t* ptr, U16 r, U16 g, U16 b, U16 a) {
 #if defined(SKRP_CPU_LSX)
     __m128i mask = __lsx_vreplgr2vr_h(255);
-    r = __lsx_vmin_hu(r, mask);
-    g = __lsx_vmin_hu(g, mask);
-    b = __lsx_vmin_hu(b, mask);
-    a = __lsx_vmin_hu(a, mask);
+    r = (U16)__lsx_vmin_hu((__m128i)r, mask);
+    g = (U16)__lsx_vmin_hu((__m128i)g, mask);
+    b = (U16)__lsx_vmin_hu((__m128i)b, mask);
+    a = (U16)__lsx_vmin_hu((__m128i)a, mask);
 
-    g = __lsx_vslli_h(g, 8);
+    g = (U16)__lsx_vslli_h(g, 8);
     r = r | g;
-    a = __lsx_vslli_h(a, 8);
+    a = (U16)__lsx_vslli_h(a, 8);
     a = a | b;
 
     __m128i r_lo = __lsx_vsllwil_wu_hu(r, 0);
-    __m128i r_hi = __lsx_vexth_wu_hu(r);
+    __m128i r_hi = __lsx_vexth_wu_hu((__m128i)r);
     __m128i a_lo = __lsx_vsllwil_wu_hu(a, 0);
-    __m128i a_hi = __lsx_vexth_wu_hu(a);
+    __m128i a_hi = __lsx_vexth_wu_hu((__m128i)a);
 
     a_lo = __lsx_vslli_w(a_lo, 16);
     a_hi = __lsx_vslli_w(a_hi, 16);
 
-    r = r_lo | a_lo;
-    a = r_hi | a_hi;
+    r = (U16)(r_lo | a_lo);
+    a = (U16)(r_hi | a_hi);
     store(ptr, join<U32>(r, a));
 #else
     r = min(r, 255);
@@ -6557,8 +6555,8 @@ STAGE_GP(bilerp_clamp_8888, const SkRasterPipeline_GatherCtx* ctx) {
     qy_lo = __lsx_vxor_v(qy_lo, temp);
     qy_hi = __lsx_vxor_v(qy_hi, temp);
 
-    I16 tx = __lsx_vpickev_h(qx_hi, qx_lo);
-    I16 ty = __lsx_vpickev_h(qy_hi, qy_lo);
+    I16 tx = (I16)__lsx_vpickev_h(qx_hi, qx_lo);
+    I16 ty = (I16)__lsx_vpickev_h(qy_hi, qy_lo);
 #else
     I16 tx = cast<I16>(qx ^ 0x8000),
         ty = cast<I16>(qy ^ 0x8000);
