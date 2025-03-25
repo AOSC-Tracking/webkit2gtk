@@ -69,7 +69,7 @@ using NoCtx = const void*;
 
 #if defined(SKRP_CPU_SCALAR) || defined(SKRP_CPU_NEON) || defined(SKRP_CPU_HSW) || \
         defined(SKRP_CPU_SKX) || defined(SKRP_CPU_AVX) || defined(SKRP_CPU_SSE41) || \
-        defined(SKRP_CPU_SSE2)
+        defined(SKRP_CPU_SSE2) || defined(SKRP_CPU_LASX) || defined(SKRP_CPU_LSX)
     // Honor the existing setting
 #elif !defined(__clang__) && !defined(__GNUC__)
     #define SKRP_CPU_SCALAR
