@@ -80,6 +80,7 @@ add_library(Skia STATIC
     src/core/SkBitmapProcState_matrixProcs.cpp
     src/core/SkBitmapProcState_opts.cpp
     src/core/SkBitmapProcState_opts_ssse3.cpp
+    src/core/SkBitmapProcState_opts_lasx.cpp
     src/core/SkBlendMode.cpp
     src/core/SkBlendModeBlender.cpp
     src/core/SkBlitMask_opts.cpp
@@ -87,6 +88,7 @@ add_library(Skia STATIC
     src/core/SkBlitRow_D32.cpp
     src/core/SkBlitRow_opts.cpp
     src/core/SkBlitRow_opts_hsw.cpp
+    src/core/SkBlitRow_opts_lasx.cpp
     src/core/SkBlitter.cpp
     src/core/SkBlitter_A8.cpp
     src/core/SkBlitter_ARGB32.cpp
@@ -243,6 +245,7 @@ add_library(Skia STATIC
     src/core/SkSwizzler_opts.cpp
     src/core/SkSwizzler_opts_hsw.cpp
     src/core/SkSwizzler_opts_ssse3.cpp
+    src/core/SkSwizzler_opts_lasx.cpp
     src/core/SkTaskGroup.cpp
     src/core/SkTextBlob.cpp
     src/core/SkTypeface.cpp
@@ -774,6 +777,7 @@ add_library(Skia STATIC
 
     src/opts/SkOpts_hsw.cpp
     src/opts/SkOpts_skx.cpp
+    src/opts/SkOpts_lasx.cpp
 
     src/ports/SkGlobalInitialization_default.cpp
     src/ports/SkImageGenerator_skia.cpp
