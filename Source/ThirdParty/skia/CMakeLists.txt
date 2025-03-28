@@ -1067,6 +1067,7 @@ endif ()
 #
 set(Skia_SkCMS_HSW_OPTS FALSE)
 set(Skia_SkCMS_SKX_OPTS FALSE)
+set(Skia_SkCMS_LASX_OPTS FALSE)
 
 set(Skia_SkCMS_HSW_FLAGS
     -ffp-contract=off
@@ -1081,6 +1082,9 @@ set(Skia_SkCMS_SKX_FLAGS
     -mavx512bw
     -mavx512vl
 )
+set(Skia_SkCMS_LASX_FLAGS
+    -mlasx
+)
 
 if (WTF_CPU_X86 OR WTF_CPU_X86_64)
     target_compile_definitions(Skia PRIVATE SK_ENABLE_AVX512_OPTS)
@@ -1090,6 +1094,12 @@ if (WTF_CPU_X86 OR WTF_CPU_X86_64)
 
     WEBKIT_ADD_COMPILER_FLAGS(CXX SOURCE src/opts/SkOpts_hsw.cpp "-march=haswell")
     WEBKIT_ADD_COMPILER_FLAGS(CXX SOURCE src/opts/SkOpts_skx.cpp "-march=skylake-avx512")
+endif ()
+
+if (WTF_CPU_LOONGARCH64)
+    WEBKIT_CHECK_COMPILER_FLAGS(
+        CXX Skia_SkCMS_LASX_OPTS
+        ${SKIA_SkCMS_LASX_FLAGS})
 endif ()
 
 if (Skia_SkCMS_HSW_OPTS)
@@ -1102,6 +1112,10 @@ if (Skia_SkCMS_SKX_OPTS)
     WEBKIT_ADD_COMPILER_FLAGS(CXX SOURCE modules/skcms/src/skcms_TransformSkx.cc ${Skia_SkCMS_SKX_FLAGS})
 else ()
     target_compile_definitions(Skia PRIVATE SKCMS_DISABLE_SKX)
+endif ()
+
+if (Skia_SkCMS_LASX_OPTS)
+    WEBKIT_APPEND_GLOBAL_COMPILER_FLAGS(${Skia_SkCMS_LASX_FLAGS})
 endif ()
 
 add_library(Skia::Skia ALIAS Skia)
