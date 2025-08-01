@@ -1666,16 +1666,15 @@ private:
             }
 
             if (node->child2()->shouldSpeculateString()) {
-                m_insertionSet.insertNode(
-                    m_indexInBlock, SpecNone, Check, node->origin,
-                    Edge(node->child2().node(), StringUse));
                 fixEdge<StringUse>(node->child2());
-            } else if (op == StringReplace) {
+                break;
+            }
+
+            if (op == StringReplace) {
                 if (node->child2()->shouldSpeculateRegExpObject() && m_graph.isWatchingRegExpPrimordialPropertiesWatchpoint(node))
                     addStringReplacePrimordialChecks(node->child2().node());
                 else 
-                    m_insertionSet.insertNode(
-                        m_indexInBlock, SpecNone, ForceOSRExit, node->origin);
+                    m_insertionSet.insertNode(m_indexInBlock, SpecNone, ForceOSRExit, node->origin);
             }
 
             if (node->child1()->shouldSpeculateString()
@@ -2004,9 +2003,13 @@ private:
         case SkipScope:
         case GetScope:
         case GetGetter:
-        case GetSetter:
-        case GetGlobalObject: {
+        case GetSetter: {
             fixEdge<KnownCellUse>(node->child1());
+            break;
+        }
+
+        case GetGlobalObject: {
+            fixEdge<ObjectUse>(node->child1());
             break;
         }
 

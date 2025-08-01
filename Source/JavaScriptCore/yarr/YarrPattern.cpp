@@ -415,7 +415,7 @@ public:
         unicodeOpSorted(rhsSortedMatchesUnicode, rhsRangesUnicode);
     }
 
-    bool hasInverteStrings()
+    bool hasInvertedStrings()
     {
         return m_invertedStrings;
     }
@@ -1306,7 +1306,7 @@ public:
 
     void atomCharacterClassEnd()
     {
-        if (m_currentCharacterClassConstructor->hasInverteStrings()) {
+        if (m_currentCharacterClassConstructor->hasInvertedStrings()) {
             m_error = ErrorCode::NegatedClassSetMayContainStrings;
             return;
         }
@@ -1477,14 +1477,6 @@ public:
                 m_alternative->m_terms.append(PatternTerm::ForwardReference(m_flags));
                 return;
             }
-
-            if (parenthesisMatchDirection() == Backward
-                && term.type == PatternTerm::Type::ParentheticalAssertion
-                && term.matchDirection() == Backward
-                && subpatternId >= term.parentheses.subpatternId) {
-                m_alternative->m_terms.append(PatternTerm::ForwardReference(m_flags));
-                return;
-            }
         }
 
         m_alternative->m_terms.append(PatternTerm(subpatternId, m_flags));
@@ -1510,14 +1502,6 @@ public:
                 ASSERT((term.type == PatternTerm::Type::ParenthesesSubpattern) || (term.type == PatternTerm::Type::ParentheticalAssertion));
 
                 if ((term.type == PatternTerm::Type::ParenthesesSubpattern) && term.capture() && (subpatternId == term.parentheses.subpatternId)) {
-                    m_alternative->m_terms.append(PatternTerm::ForwardReference(m_flags));
-                    return;
-                }
-
-                if (parenthesisMatchDirection() == Backward
-                    && term.type == PatternTerm::Type::ParentheticalAssertion
-                    && term.matchDirection() == Backward
-                    && subpatternId >= term.parentheses.subpatternId) {
                     m_alternative->m_terms.append(PatternTerm::ForwardReference(m_flags));
                     return;
                 }
@@ -1621,6 +1605,14 @@ public:
         ASSERT(m_alternative->m_terms.size());
 
         if (!max) {
+            // In a case of backwards parentheses matching, we may have a forward reference that has
+            // been quantified with {0}, meaning that we can elide it. We should check if we added an
+            // UnresolvedForwardReference object for this term, and if so, pop it.
+            if (parenthesisMatchDirection() == Backward && m_forwardReferencesInLookbehind.size()) {
+                UnresolvedForwardReference& mostRecentForwardReference = m_forwardReferencesInLookbehind.last();
+                if (mostRecentForwardReference.term() == &m_alternative->lastTerm())
+                    m_forwardReferencesInLookbehind.removeLast();
+            }
             m_alternative->removeLastTerm();
             return;
         }
@@ -1681,6 +1673,16 @@ public:
         }
 
         m_alternative = m_alternative->m_parent->addNewAlternative(m_pattern.m_numSubpatterns, parenthesisMatchDirection());
+    }
+
+    inline bool abortedDueToError() const
+    {
+        return hasError(m_error);
+    }
+
+    inline ErrorCode abortErrorCode() const
+    {
+        return m_error;
     }
 
     ErrorCode setupAlternativeOffsets(PatternAlternative* alternative, unsigned currentCallFrameSize, unsigned initialInputPosition, unsigned& newCallFrameSize) WARN_UNUSED_RETURN

@@ -30,7 +30,6 @@
 #if ENABLE(VIDEO) && USE(GSTREAMER)
 
 #include "AudioTrackPrivateGStreamer.h"
-#include "GLVideoSinkGStreamer.h"
 #include "GStreamerAudioMixer.h"
 #include "GStreamerCommon.h"
 #include "GStreamerQuirks.h"
@@ -109,6 +108,10 @@
 #include <gst/mpegts/mpegts.h>
 #undef GST_USE_UNSTABLE_API
 #endif // ENABLE(VIDEO) && USE(GSTREAMER_MPEGTS)
+
+#if USE(GSTREAMER_GL)
+#include "GLVideoSinkGStreamer.h"
+#endif // USE(GSTREAMER_GL)
 
 #if USE(COORDINATED_GRAPHICS)
 #include "BitmapTexture.h"
@@ -234,8 +237,10 @@ void MediaPlayerPrivateGStreamer::tearDown(bool clearMediaPlayer)
         g_signal_handlers_disconnect_matched(videoSinkPad.get(), G_SIGNAL_MATCH_DATA, 0, 0, nullptr, nullptr, this);
     }
 
+#if USE(GSTREAMER_GL)
     if (m_videoDecoderPlatform == GstVideoDecoderPlatform::Video4Linux)
         flushCurrentBuffer();
+#endif
 
     if (m_videoSink)
         g_signal_handlers_disconnect_matched(m_videoSink.get(), G_SIGNAL_MATCH_DATA, 0, 0, nullptr, nullptr, this);
@@ -463,7 +468,7 @@ void MediaPlayerPrivateGStreamer::play()
         if (player) {
             if (player->isLooping()) {
                 GST_DEBUG_OBJECT(pipeline(), "Scheduling initial SEGMENT seek");
-                doSeek(SeekTarget { playbackPosition() }, m_playbackRate);
+                doSeek(SeekTarget { playbackPosition() }, m_playbackRate, true);
             } else
                 updateDownloadBufferingFlag();
         }
@@ -534,7 +539,7 @@ bool MediaPlayerPrivateGStreamer::paused() const
     return !m_isPipelinePlaying;
 }
 
-bool MediaPlayerPrivateGStreamer::doSeek(const SeekTarget& target, float rate)
+bool MediaPlayerPrivateGStreamer::doSeek(const SeekTarget& target, float rate, bool isAsync)
 {
     RefPtr player = m_player.get();
 
@@ -582,8 +587,20 @@ bool MediaPlayerPrivateGStreamer::doSeek(const SeekTarget& target, float rate)
 
     auto seekStart = toGstClockTime(startTime);
     auto seekStop = toGstClockTime(endTime);
+    GstEvent* event = gst_event_new_seek(rate, GST_FORMAT_TIME, m_seekFlags, GST_SEEK_TYPE_SET, seekStart, GST_SEEK_TYPE_SET, seekStop);
+
     GST_DEBUG_OBJECT(pipeline(), "[Seek] Performing actual seek to %" GST_TIMEP_FORMAT " (endTime: %" GST_TIMEP_FORMAT ") at rate %f", &seekStart, &seekStop, rate);
-    return gst_element_seek(m_pipeline.get(), rate, GST_FORMAT_TIME, m_seekFlags, GST_SEEK_TYPE_SET, seekStart, GST_SEEK_TYPE_SET, seekStop);
+
+    if (isAsync) {
+        gst_element_call_async(m_pipeline.get(), reinterpret_cast<GstElementCallAsyncFunc>(+[](GstElement* pipeline, gpointer userData) {
+            GstEvent* event = static_cast<GstEvent*>(userData);
+            gst_element_send_event(pipeline, event);
+        }), event, nullptr);
+
+        return true;
+    }
+
+    return gst_element_send_event(m_pipeline.get(), event);
 }
 
 void MediaPlayerPrivateGStreamer::seekToTarget(const SeekTarget& inTarget)
@@ -2516,15 +2533,21 @@ void MediaPlayerPrivateGStreamer::configureElement(GstElement* element)
     // is not an issue in 1.22. Streams parsing is not needed for MediaStream cases because we do it
     // upfront for incoming WebRTC MediaStreams. It is however needed for MSE, otherwise decodebin3
     // might not auto-plug hardware decoders.
+    bool isBlob = m_url.protocolIs("blob"_s);
     auto nameView = StringView::fromLatin1(elementName.get());
-    if (webkitGstCheckVersion(1, 22, 0) && nameView.startsWith("urisourcebin"_s) && (isMediaSource() || isMediaStreamPlayer()))
+    if (webkitGstCheckVersion(1, 22, 0) && nameView.startsWith("urisourcebin"_s) && (isBlob || isMediaSource() || isMediaStreamPlayer()))
         g_object_set(element, "use-buffering", FALSE, "parse-streams", !isMediaStreamPlayer(), nullptr);
 
-    // In case of playbin3 with <video ... preload="auto">, instantiate
-    // downloadbuffer element, otherwise the playbin3 would instantiate
-    // a queue element instead .
-    if (nameView.startsWith("urisourcebin"_s) && !m_isLegacyPlaybin && !isMediaSource() && !isMediaStreamPlayer() && m_preload == MediaPlayer::Preload::Auto)
-        g_object_set(element, "download", TRUE, nullptr);
+    // In case of playbin3 with <video ... preload="auto">, instantiate downloadbuffer element,
+    // otherwise the playbin3 would instantiate a queue element instead. When playing blob URIs,
+    // configure urisourcebin to setup a ring buffer so that downstream demuxers operate in pull
+    // mode. Some demuxers (matroskademux) don't work as well in push mode.
+    if (nameView.startsWith("urisourcebin"_s) && !m_isLegacyPlaybin && m_preload == MediaPlayer::Preload::Auto) {
+        if (isBlob)
+            g_object_set(element, "ring-buffer-max-size", 2 * MB, nullptr);
+        else if (!isMediaSource() && !isMediaStreamPlayer())
+            g_object_set(element, "download", TRUE, nullptr);
+    }
 
     // Collect processing time metrics for video decoders and converters.
     if ((classifiers.contains("Converter"_s) || classifiers.contains("Decoder"_s)) && classifiers.contains("Video"_s) && !classifiers.contains("Parser"_s) && !classifiers.contains("Sink"_s))
@@ -3208,12 +3231,13 @@ void MediaPlayerPrivateGStreamer::createGSTPlayBin(const URL& url)
     GST_INFO("Creating pipeline for %s player", player->isVideoPlayer() ? "video" : "audio");
     const char* playbinName = "playbin";
 
-    // MSE and Mediastream require playbin3. Regular playback can use playbin3 on-demand with the
+    // MSE, Blob and Mediastream require playbin3. Regular playback can use playbin3 on-demand with the
     // WEBKIT_GST_USE_PLAYBIN3 environment variable.
-    const char* usePlaybin3 = g_getenv("WEBKIT_GST_USE_PLAYBIN3");
+    auto usePlaybin3 = StringView::fromLatin1(g_getenv("WEBKIT_GST_USE_PLAYBIN3"));
     bool isMediaStream = url.protocolIs("mediastream"_s);
-    if (isMediaSource() || isMediaStream || (usePlaybin3 && !strcmp(usePlaybin3, "1")))
-        playbinName = "playbin3";
+    bool isBlob = url.protocolIs("blob"_s);
+    if (isMediaSource() || isMediaStream || isBlob || usePlaybin3 == "1"_s)
+        playbinName = "playbin3"_s;
 
     ASSERT(!m_pipeline);
 
@@ -3221,7 +3245,7 @@ void MediaPlayerPrivateGStreamer::createGSTPlayBin(const URL& url)
     if (elementId.isEmpty())
         elementId = "media-player"_s;
 
-    auto type = isMediaSource() ? "MSE-"_s : isMediaStream ? "mediastream-"_s : ""_s;
+    auto type = isMediaSource() ? "MSE-"_s : isMediaStream ? "mediastream-"_s : isBlob ? "blob-" : ""_s;
 
     m_isLegacyPlaybin = !g_strcmp0(playbinName, "playbin");
 
@@ -3720,7 +3744,7 @@ void MediaPlayerPrivateGStreamer::triggerRepaint(GRefPtr<GstSample>&& sample)
         shouldTriggerResize = !m_sample;
         if (!shouldTriggerResize) {
             auto previousBuffer = gst_sample_get_buffer(m_sample.get());
-            RELEASE_ASSERT(previousBuffer);
+            // We're omitting a !previousBuffer assert here because on some embedded platforms the buffer can't be deep copied by flushCurrentBuffer().
             isDuplicateSample = buffer == previousBuffer;
         }
         m_sample = WTFMove(sample);
@@ -3810,6 +3834,7 @@ void MediaPlayerPrivateGStreamer::repaintCancelledCallback(MediaPlayerPrivateGSt
     player->cancelRepaint();
 }
 
+#if USE(GSTREAMER_GL)
 void MediaPlayerPrivateGStreamer::flushCurrentBuffer()
 {
     Locker sampleLocker { m_sampleMutex };
@@ -3821,6 +3846,8 @@ void MediaPlayerPrivateGStreamer::flushCurrentBuffer()
         // might have to be reclaimed by a non-sysmem buffer pool.
         const GstStructure* info = gst_sample_get_info(m_sample.get());
         auto buffer = adoptGRef(gst_buffer_copy_deep(gst_sample_get_buffer(m_sample.get())));
+        if (!buffer)
+            GST_DEBUG_OBJECT(pipeline(), "Buffer couldn't be deep-copied on this platform, setting null buffer on the sample instead");
         m_sample = adoptGRef(gst_sample_new(buffer.get(), gst_sample_get_caps(m_sample.get()),
             gst_sample_get_segment(m_sample.get()), info ? gst_structure_copy(info) : nullptr));
     }
@@ -3831,6 +3858,7 @@ void MediaPlayerPrivateGStreamer::flushCurrentBuffer()
     m_contentsBufferProxy->dropCurrentBufferWhilePreservingTexture(shouldWait);
 #endif
 }
+#endif
 
 void MediaPlayerPrivateGStreamer::setVisibleInViewport(bool isVisible)
 {
@@ -3979,6 +4007,7 @@ MediaPlayer::MovieLoadType MediaPlayerPrivateGStreamer::movieLoadType() const
     return MediaPlayer::MovieLoadType::Download;
 }
 
+#if USE(GSTREAMER_GL)
 GstElement* MediaPlayerPrivateGStreamer::createVideoSinkGL()
 {
     const char* disableGLSink = g_getenv("WEBKIT_GST_DISABLE_GL_SINK");
@@ -4002,6 +4031,7 @@ GstElement* MediaPlayerPrivateGStreamer::createVideoSinkGL()
 
     return sink;
 }
+#endif // USE(GSTREAMER_GL)
 
 bool MediaPlayerPrivateGStreamer::isHolePunchRenderingEnabled() const
 {
@@ -4095,8 +4125,10 @@ GstElement* MediaPlayerPrivateGStreamer::createVideoSink()
         return m_videoSink.get();
     }
 
+#if USE(GSTREAMER_GL)
     if (!m_videoSink && m_canRenderingBeAccelerated)
         m_videoSink = createVideoSinkGL();
+#endif
 
     if (!m_videoSink) {
         m_isUsingFallbackVideoSink = true;

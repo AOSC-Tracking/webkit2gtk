@@ -80,7 +80,7 @@ JSC_DEFINE_JIT_OPERATION(operationJSToWasmEntryWrapperBuildFrame, JSEntrypointCa
     auto* globalObject = function->globalObject();
     VM& vm = globalObject->vm();
     NativeCallFrameTracer tracer(vm, callFrame);
-    auto* callee = function->m_jsToWasmCallee.ptr();
+    auto* callee = function->jsToWasmCallee();
     ASSERT(function);
     ASSERT(callee->ident() == 0xBF);
     ASSERT(callee->typeIndex() == function->typeIndex());
@@ -220,6 +220,12 @@ JSC_DEFINE_JIT_OPERATION(operationJSToWasmEntryWrapperBuildReturnFrame, EncodedJ
 
     auto calleeSPOffsetFromFP = -(static_cast<intptr_t>(callee->frameSize()) + JSEntrypointCallee::SpillStackSpaceAligned - JSEntrypointCallee::RegisterStackSpaceAligned);
 
+    auto fillArrayRemainderWithUndefined = [&](unsigned start) -> EncodedJSValue {
+        for (unsigned i = start; i < functionSignature.returnCount(); i++)
+            resultArray->initializeIndex(initializationScope, i, jsUndefined());
+        return encodedJSValue();
+    };
+
     for (unsigned i = 0; i < functionSignature.returnCount(); ++i) {
         ValueLocation loc = wasmFrameConvention.results[i].location;
         Type type = functionSignature.returnType(i);
@@ -231,7 +237,7 @@ JSC_DEFINE_JIT_OPERATION(operationJSToWasmEntryWrapperBuildReturnFrame, EncodedJ
                 break;
             case TypeKind::I64:
                 result = JSBigInt::makeHeapBigIntOrBigInt32(instance->globalObject(), *access.operator()<int64_t>(registerSpace, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) * sizeof(UCPURegister)));
-                OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
+                OPERATION_RETURN_IF_EXCEPTION(scope, fillArrayRemainderWithUndefined(i));
                 break;
             case TypeKind::F32:
                 result = jsNumber(purifyNaN(*access.operator()<float>(registerSpace, GPRInfo::numberOfArgumentRegisters * sizeof(UCPURegister) + FPRInfo::toArgumentIndex(loc.fpr()) * bytesForWidth(Width::Width64))));
@@ -252,7 +258,7 @@ JSC_DEFINE_JIT_OPERATION(operationJSToWasmEntryWrapperBuildReturnFrame, EncodedJ
                 break;
             case TypeKind::I64:
                 result = JSBigInt::makeHeapBigIntOrBigInt32(instance->globalObject(), *access.operator()<int64_t>(callFrame, calleeSPOffsetFromFP + loc.offsetFromSP()));
-                OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
+                OPERATION_RETURN_IF_EXCEPTION(scope, fillArrayRemainderWithUndefined(i));
                 break;
             case TypeKind::F32:
                 result = jsNumber(purifyNaN(*access.operator()<float>(callFrame, calleeSPOffsetFromFP + loc.offsetFromSP())));
@@ -297,15 +303,22 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalArguments, bool, (void* sp,
         return &reinterpret_cast<V*>(arr)[i / sizeof(V)];
     };
 
+    // We need to set up them immediately before potentially throwing anything.
+    auto singletonCallee = CalleeBits::boxNativeCallee(&WasmToJSCallee::singleton());
+    *access.operator()<uintptr_t>(cfr, CallFrameSlot::codeBlock * sizeof(Register)) = std::bit_cast<uintptr_t>(instance);
+    *access.operator()<uintptr_t>(cfr, CallFrameSlot::callee * sizeof(Register)) = std::bit_cast<uintptr_t>(singletonCallee);
+#if USE(JSVALUE32_64)
+    *access.operator()<uintptr_t>(cfr, CallFrameSlot::callee * sizeof(Register) + TagOffset) = JSValue::NativeCalleeTag;
+#endif
+
     CallFrame* calleeFrame = std::bit_cast<CallFrame*>(reinterpret_cast<uintptr_t>(sp) - sizeof(CallerFrameAndPC));
     ASSERT(instance);
     ASSERT(instance->globalObject());
     VM& vm = instance->vm();
+
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    constexpr int codeBlockOffset = -0x18;
-
-    auto* importableFunction = *access.operator()<WasmOrJSImportableFunctionCallLinkInfo*>(cfr, codeBlockOffset);
+    auto* importableFunction = *access.operator()<WasmOrJSImportableFunctionCallLinkInfo*>(cfr, WasmToJSCallableFunctionSlot);
     auto typeIndex = importableFunction->typeIndex;
     const TypeDefinition& typeDefinition = TypeInformation::get(typeIndex).expand();
     const auto& signature = *typeDefinition.as<FunctionSignature>();
@@ -420,12 +433,6 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalArguments, bool, (void* sp,
     // materializeImportJSCell and store
     *access.operator()<uintptr_t>(calleeFrame, CallFrameSlot::callee * static_cast<int>(sizeof(Register))) = std::bit_cast<uintptr_t>(importableFunction->importFunction);
     *access.operator()<uint32_t>(calleeFrame, CallFrameSlot::argumentCountIncludingThis * static_cast<int>(sizeof(Register)) + PayloadOffset) = argCount + 1; // including this = +1
-
-    // set up codeblock
-    auto singletonCallee = CalleeBits::boxNativeCallee(&WasmToJSCallee::singleton());
-    *access.operator()<uintptr_t>(cfr, CallFrameSlot::codeBlock * sizeof(Register)) = std::bit_cast<uintptr_t>(instance);
-    *access.operator()<uintptr_t>(cfr, CallFrameSlot::callee * sizeof(Register)) = std::bit_cast<uintptr_t>(singletonCallee);
-
     OPERATION_RETURN(scope, true);
 }
 
@@ -448,9 +455,7 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalReturnValues, void, (void* 
     NativeCallFrameTracer tracer(instance->vm(), cfr);
     auto scope = DECLARE_THROW_SCOPE(instance->vm());
 
-    constexpr int codeBlockOffset = -0x18;
-
-    auto* importableFunction = *access.operator()<WasmOrJSImportableFunctionCallLinkInfo*>(cfr, codeBlockOffset);
+    auto* importableFunction = *access.operator()<WasmOrJSImportableFunctionCallLinkInfo*>(cfr, WasmToJSCallableFunctionSlot);
     auto typeIndex = importableFunction->typeIndex;
     const TypeDefinition& typeDefinition = TypeInformation::get(typeIndex).expand();
     const auto& signature = *typeDefinition.as<FunctionSignature>();
@@ -1259,8 +1264,13 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmLoopOSREnterBBQJIT, void, (Probe:
 
 JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmUnwind, void*, (JSWebAssemblyInstance* instance))
 {
+    ASSERT(instance->type() == WebAssemblyInstanceType);
     CallFrame* callFrame = DECLARE_WASM_CALL_FRAME(instance);
-    assertCalleeIsReferenced(callFrame, instance);
+#if ASSERT_ENABLED
+    // JS -> Wasm might throw before it's transitioned to a NativeCallee. It should have restored any callee saves at this point already though.
+    if (callFrame->callee().isNativeCallee())
+        assertCalleeIsReferenced(callFrame, instance);
+#endif
     VM& vm = instance->vm();
     NativeCallFrameTracer tracer(vm, callFrame);
     genericUnwind(vm, callFrame);
@@ -1829,7 +1839,10 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayNewEmpty, EncodedJSValue, (J
         return JSValue::encode(jsNull());
 
     // Create a default-initialized array with the right element type and length
-    return JSValue::encode(JSWebAssemblyArray::create(vm, globalObject->webAssemblyArrayStructure(), fieldType, size, WTFMove(arrayRTT)));
+    auto* array = JSWebAssemblyArray::tryCreate(vm, globalObject->webAssemblyArrayStructure(), fieldType, size, WTFMove(arrayRTT));
+    if (UNLIKELY(!array))
+        return JSValue::encode(jsNull());
+    return JSValue::encode(array);
 }
 
 JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayGet, EncodedJSValue, (JSWebAssemblyInstance* instance, uint32_t typeIndex, EncodedJSValue arrayValue, uint32_t index))

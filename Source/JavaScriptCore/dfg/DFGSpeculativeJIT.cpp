@@ -7957,9 +7957,15 @@ void SpeculativeJIT::compileGetGlobalObject(Node* node)
 {
     SpeculateCellOperand object(this, node->child1());
     GPRTemporary result(this);
-    emitLoadStructure(vm(), object.gpr(), result.gpr());
-    loadPtr(Address(result.gpr(), Structure::globalObjectOffset()), result.gpr());
-    cellResult(result.gpr(), node);
+
+    GPRReg objectGPR = object.gpr();
+    GPRReg resultGPR = result.gpr();
+
+    speculateObject(node->child1(), objectGPR);
+
+    emitLoadStructure(vm(), objectGPR, resultGPR);
+    loadPtr(Address(resultGPR, Structure::globalObjectOffset()), resultGPR);
+    cellResult(resultGPR, node);
 }
 
 void SpeculativeJIT::compileGetGlobalThis(Node* node)
@@ -13070,22 +13076,41 @@ void SpeculativeJIT::compileStringReplace(Node* node)
         return;
     }
 
-    // If we fixed up the edge of child2, we inserted a Check(@child2, String).
-    OperandSpeculationMode child2SpeculationMode = AutomaticOperandSpeculation;
-    if (node->child2().useKind() == StringUse)
-        child2SpeculationMode = ManualOperandSpeculation;
+    switch (node->child2().useKind()) {
+    case StringUse: {
+        JSValueOperand string(this, node->child1());
+        SpeculateCellOperand search(this, node->child2());
+        JSValueOperand replace(this, node->child3());
+        JSValueRegs stringRegs = string.jsValueRegs();
+        GPRReg searchGPR = search.gpr();
+        JSValueRegs replaceRegs = replace.jsValueRegs();
 
-    JSValueOperand string(this, node->child1());
-    JSValueOperand search(this, node->child2(), child2SpeculationMode);
-    JSValueOperand replace(this, node->child3());
-    JSValueRegs stringRegs = string.jsValueRegs();
-    JSValueRegs searchRegs = search.jsValueRegs();
-    JSValueRegs replaceRegs = replace.jsValueRegs();
+        speculateString(node->child2(), searchGPR);
 
-    flushRegisters();
-    GPRFlushedCallResult result(this);
-    callOperation(operationStringProtoFuncReplaceGeneric, result.gpr(), LinkableConstant::globalObject(*this, node), stringRegs, searchRegs, replaceRegs);
-    cellResult(result.gpr(), node);
+        flushRegisters();
+        GPRFlushedCallResult result(this);
+        callOperation(operationStringProtoFuncReplaceGeneric, result.gpr(), LinkableConstant::globalObject(*this, node), stringRegs, CellValue(searchGPR), replaceRegs);
+        cellResult(result.gpr(), node);
+        break;
+    }
+    case UntypedUse: {
+        JSValueOperand string(this, node->child1());
+        JSValueOperand search(this, node->child2());
+        JSValueOperand replace(this, node->child3());
+        JSValueRegs stringRegs = string.jsValueRegs();
+        JSValueRegs searchRegs = search.jsValueRegs();
+        JSValueRegs replaceRegs = replace.jsValueRegs();
+
+        flushRegisters();
+        GPRFlushedCallResult result(this);
+        callOperation(operationStringProtoFuncReplaceGeneric, result.gpr(), LinkableConstant::globalObject(*this, node), stringRegs, searchRegs, replaceRegs);
+        cellResult(result.gpr(), node);
+        break;
+    }
+    default:
+        DFG_CRASH(m_graph, node, "Bad UseKind");
+        break;
+    }
 }
 
 void SpeculativeJIT::compileStringReplaceString(Node* node)
@@ -15809,8 +15834,11 @@ void SpeculativeJIT::compileHasIndexedProperty(Node* node, S_JITOperation_GCZ sl
     addSlowPathGeneratorLambda([=, this, savePlans = WTFMove(savePlans), slowCases = WTFMove(slowCases)]() {
         slowCases.link(this);
 
-        if (preserveIndexReg)
+        if (preserveIndexReg) {
             pushToSave(indexGPR);
+            if (!isARM64())
+                pushToSave(indexGPR);
+        }
         silentSpill(savePlans);
 
         setupArguments<S_JITOperation_GCZ>(LinkableConstant::globalObject(*this, node), baseGPR, indexGPR);
@@ -15823,8 +15851,11 @@ void SpeculativeJIT::compileHasIndexedProperty(Node* node, S_JITOperation_GCZ sl
         setupResults(resultGPR);
 
         silentFill(savePlans);
-        if (preserveIndexReg)
+        if (preserveIndexReg) {
+            if (!isARM64())
+                popToRestore(indexGPR);
             popToRestore(indexGPR);
+        }
 
         if (exceptionReg)
             exceptionCheck(*exceptionReg);

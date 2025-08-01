@@ -5877,6 +5877,8 @@ void RenderLayerCompositor::updateSynchronousScrollingNodes()
     };
     
     auto setHasSlowRepaintObjectsSynchronousScrollingReasonOnRootNode = [&](bool hasSlowRepaintObjects) {
+        if (!rootScrollingNodeID)
+            return;
         // ScrollingCoordinator manages all bits other than HasSlowRepaintObjects, so maintain their current value.
         auto reasons = scrollingCoordinator->synchronousScrollingReasons(*rootScrollingNodeID);
         reasons.set({ SynchronousScrollingReason::HasSlowRepaintObjects }, hasSlowRepaintObjects);
@@ -5977,7 +5979,15 @@ void RenderLayerCompositor::didAddScrollingLayer(RenderLayer& layer)
 
 ScrollingCoordinator* RenderLayerCompositor::scrollingCoordinator() const
 {
-    return protectedPage()->scrollingCoordinator();
+    RefPtr frame = m_renderView.document().frame();
+    if (!frame)
+        return nullptr;
+
+    RefPtr page = frame->page();
+    if (!page)
+        return nullptr;
+
+    return page->scrollingCoordinator();
 }
 
 GraphicsLayerFactory* RenderLayerCompositor::graphicsLayerFactory() const
